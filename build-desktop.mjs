@@ -13,7 +13,7 @@ const outputFile = join(outputRoot, 'plugin.js')
 const agentRoots = [
   process.env.HERMES_AGENT_SOURCE,
   join(hermesHome, 'hermes-agent'),
-  join(sourceRoot, 'node_modules'),   // P0-D：CI/开源环境（npm ci 后 esbuild 装在 desktop-src）
+  sourceRoot,                          // P0-D：CI/开源环境（npm ci 后 esbuild 装在 desktop-src/node_modules）
 ].filter(Boolean)
 
 const agentRoot = agentRoots.find(root => existsSync(join(root, 'node_modules', 'esbuild', 'package.json')))
