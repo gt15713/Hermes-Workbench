@@ -33,7 +33,6 @@ def wb(tmp_path, monkeypatch):
     for d in ("待验证", "待回看", "任务", "心理学随想", "梦中的邮件", "已处理", "回收站", "日志"):
         (tmp_path / d).mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(api, "WORKBENCH_ROOT", tmp_path)
-    monkeypatch.setattr(api, "LOG_DIR", tmp_path / "日志")
     monkeypatch.setattr(wb_utils_mod, "WORKBENCH_ROOT", tmp_path)
     monkeypatch.setattr(wb_utils_mod, "LOG_DIR", tmp_path / "日志")
     monkeypatch.setattr(repo_mod, "WORKBENCH_ROOT", tmp_path)

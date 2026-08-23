@@ -16,7 +16,7 @@ jobs:
           python-version: "3.12"
 
       - name: Python deps
-        run: pip install pytest ruff pyyaml fastapi
+        run: pip install pytest ruff pyyaml fastapi httpx2
 
       - name: Ruff lint
         run: ruff check dashboard scripts
