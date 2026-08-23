@@ -57,6 +57,7 @@ class TestFileLock:
         # 每行都是完整 A/B 版本（无交错半行）
         assert all(ln in ("A" * 100, "B" * 100) for ln in lines)
 
+    @pytest.mark.skipif(sys.platform != "win32", reason="FileLock 非 Windows 降级无锁（repo.py 设计），超时语义仅 Windows 可测")
     def test_lock_timeout_raises(self, tmp_path):
         """持锁进程未释放 → 第二次获取超时抛 TimeoutError（告警+跳过，不静默覆盖）。"""
         target = tmp_path / "locked.md"

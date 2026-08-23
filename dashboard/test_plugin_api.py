@@ -293,8 +293,11 @@ class TestSafeResolve:
         # 指定分区就是安全边界：跨分区与逃出工作台都必须拒绝。
         assert api._safe_resolve("任务", "../待验证/秘密.md") is None
         assert api._safe_resolve("任务", "../../../Windows/system32/x.md") is None
-        assert api._safe_resolve("任务", "..\\..\\..\\Windows\\system32\\x.md") is None
+        if sys.platform == "win32":
+            # Windows 反斜杠路径分隔符语义（Linux 上 \\ 是普通字符，line 295 已覆盖正斜杠）
+            assert api._safe_resolve("任务", "..\\..\\..\\Windows\\system32\\x.md") is None
 
+    @pytest.mark.skipif(sys.platform != "win32", reason="盘符绝对路径是 Windows 语义（Linux 上 C:\\… 为普通文件名）")
     def test_absolute_rejected(self, wb):
         assert api._safe_resolve("任务", "C:\\Windows\\system32\\x.md") is None
 
@@ -308,6 +311,7 @@ class TestAtomicWrite:
         assert p.exists()
         assert "status: todo" in p.read_text(encoding="utf-8", errors="replace")
 
+    @pytest.mark.skipif(sys.platform != "win32", reason="CRLF EOL 保真是 Windows 平台语义")
     def test_crlf_roundtrip_preserves_eol(self, wb):
         """CRLF 源文件经真实读写路径（read_text → _atomic_write）往返：EOL 保持 CRLF。"""
         p = wb / "任务" / "crlf.md"

@@ -10,6 +10,7 @@
 """
 import sqlite3
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -243,6 +244,8 @@ class TestDualRepo:
         p = fs_root / "任务" / "conflict.md"
         dual.write_text(p, "# v1\n")
         old = dual.db.mtime(p)
+        # 跨平台：确保 v1→v2 写入间隔超过 0.01s 冲突阈值（Linux mtime 精度高，紧接写入差 <0.01 不触发）
+        time.sleep(0.02)
         # 并发写入 v2（mtime 变化）
         dual.write_text(p, "# v2 并发修改\n")
         with pytest.raises(WorkbenchConflictError):
