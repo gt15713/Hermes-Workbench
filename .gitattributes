@@ -1,0 +1,4 @@
+# 行尾统一：源码按文本处理，构建产物锁定字节（防 Windows CRLF 破坏 bundle 校验）
+* text=auto
+desktop/plugin.js -text
+desktop/build-info.json -text
