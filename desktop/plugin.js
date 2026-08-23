@@ -29,11 +29,13 @@ var $collapsedSections = atom({});
 var $filterText = atom("");
 var $tagFilter = atom("");
 var $showArchived = atom(false);
+var $dueFilter = atom("all");
 var $viewMode = atom("board");
 var COLLAPSED_KEY = "wbCollapsedSections.v2";
 var SHOW_ARCHIVED_KEY = "wbShowArchived";
 var VIEW_MODE_KEY = "wbViewMode";
 var TAG_FILTER_KEY = "wbTagFilter";
+var DUE_FILTER_KEY = "wbDueFilter";
 function bindApi(r, storage, socket) {
   rest = r;
   const unsubs = [];
@@ -45,6 +47,7 @@ function bindApi(r, storage, socket) {
   persist($showArchived, SHOW_ARCHIVED_KEY, false);
   persist($viewMode, VIEW_MODE_KEY, "board");
   persist($tagFilter, TAG_FILTER_KEY, "");
+  persist($dueFilter, DUE_FILTER_KEY, "all");
   if ($viewMode.get() === "list") $viewMode.set("board");
   const closeSocket = socket("/events?since=0", (data) => onEventsFrame(data));
   unsubs.push(closeSocket);
@@ -77,6 +80,7 @@ var fetchSearch = (q, tag = "") => call(
 );
 var fetchBrief = () => call("/brief", { method: "POST", body: {} });
 var fetchSettings = () => call("/settings");
+var fetchHealth = () => call("/health");
 var saveSettings = (body) => call("/settings", {
   method: "POST",
   body
@@ -1136,6 +1140,11 @@ function WbSectionView({ section, onPreview, openMenuKey, onMenuOpenChange, mult
   const filterText = useValue2($filterText).toLowerCase();
   const tagFilter = useValue2($tagFilter);
   const showArchived = useValue2($showArchived);
+  const dueFilter = useValue2($dueFilter);
+  const todayLocal = useMemo2(() => {
+    const n = /* @__PURE__ */ new Date();
+    return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
+  }, []);
   const expanded = useMemo2(() => {
     const out = [];
     for (const card of section.files) {
@@ -1156,9 +1165,9 @@ function WbSectionView({ section, onPreview, openMenuKey, onMenuOpenChange, mult
       return [];
     }
     return expanded.filter(
-      (c) => (tagFilter ? c.tags?.includes(tagFilter) ?? false : true) && (!filterText || c.title.toLowerCase().includes(filterText) || c.file.toLowerCase().includes(filterText))
+      (c) => (tagFilter ? c.tags?.includes(tagFilter) ?? false : true) && (dueFilter === "all" ? true : c.due ? dueFilter === "today" ? c.due === todayLocal : c.due < todayLocal : false) && (!filterText || c.title.toLowerCase().includes(filterText) || c.file.toLowerCase().includes(filterText))
     );
-  }, [expanded, filterText, tagFilter, showArchived, section.key]);
+  }, [expanded, filterText, tagFilter, dueFilter, todayLocal, showArchived, section.key]);
   const ARCHIVED_PREVIEW_LIMIT = 10;
   const archivedPreview = section.key === "done" || section.key === "trash";
   const visible = archivedPreview && !showAllArchived ? filtered.slice(0, ARCHIVED_PREVIEW_LIMIT) : filtered;
@@ -1765,6 +1774,12 @@ function WorkbenchBoardPage() {
   }, [openMenuKey]);
   const [showNewTask, setShowNewTask] = useState2(false);
   const [showSettings, setShowSettings] = useState2(false);
+  const health = useQuery2({ queryKey: ["workbench", "health"], queryFn: fetchHealth, refetchInterval: 3e4 });
+  const settings = useQuery2({ queryKey: ["workbench", "settings"], queryFn: fetchSettings });
+  const dueFilter = useValue2($dueFilter);
+  const [bannerDismissedDate, setBannerDismissedDate] = useState2(
+    () => typeof localStorage === "undefined" ? "" : localStorage.getItem("wbDeliveryBannerDismissedDate") || ""
+  );
   const [showToday, setShowToday] = useState2(true);
   const thoughtSection = board?.sections.find((s) => s.key === "thought");
   const pendingCount = thoughtSection ? thoughtSection.files.reduce((n, f) => n + (f.entry_count || 0), 0) : 0;
@@ -1847,7 +1862,37 @@ function WorkbenchBoardPage() {
     return /* @__PURE__ */ jsx3("div", { className: "flex h-full items-center justify-center text-sm text-(--ui-text-danger)", children: "后端不可达" });
   }
   if (!board) return null;
+  const deliverMissing = settings.data?.ok === true && !settings.data.config.deliver_target;
+  const showDeliveryBanner = !!deliverMissing && bannerDismissedDate !== board.today;
+  const healthData = health.data;
+  const healthTone = !healthData ? "bg-[#94a3b8]" : !healthData.scheduler_alive || healthData.error_count > 0 || healthData.delivery_pending ? "bg-[#f87171]" : healthData.vault_configured ? "bg-[#34d399]" : "bg-[#fbbf24]";
+  const healthLabel = !healthData ? "健康检查…" : !healthData.scheduler_alive ? "调度器未运行" : healthData.error_count > 0 ? `错误 ${healthData.error_count}` : healthData.delivery_pending ? "投递待重试" : healthData.vault_configured ? "链路正常" : "链路正常（未配 vault）";
   return /* @__PURE__ */ jsxs3("div", { className: "wb-root flex h-full flex-col", children: [
+    showDeliveryBanner && /* @__PURE__ */ jsxs3("div", { className: "flex items-center gap-2 border-b border-[#fbbf24]/30 bg-[#fbbf24]/10 px-3 py-1.5 text-[0.75rem] text-[#fbbf24]", children: [
+      /* @__PURE__ */ jsx3(Codicon2, { name: "warning", size: "0.8rem" }),
+      /* @__PURE__ */ jsx3("span", { children: "投递目标未配置，日报/提醒不会发送到 QQ。" }),
+      /* @__PURE__ */ jsx3(
+        "button",
+        {
+          type: "button",
+          className: "rounded border border-[#fbbf24]/40 px-1.5 py-0.5 hover:bg-[#fbbf24]/20",
+          onClick: () => setShowSettings(true),
+          children: "去设置"
+        }
+      ),
+      /* @__PURE__ */ jsx3(
+        "button",
+        {
+          type: "button",
+          className: "text-[0.6875rem] text-[#fbbf24]/70 hover:text-[#fbbf24]",
+          onClick: () => {
+            setBannerDismissedDate(board.today);
+            localStorage.setItem("wbDeliveryBannerDismissedDate", board.today);
+          },
+          children: "今日忽略"
+        }
+      )
+    ] }),
     /* @__PURE__ */ jsxs3("div", { className: "flex items-center gap-2 border-b border-(--ui-stroke-secondary) px-3 py-2", children: [
       /* @__PURE__ */ jsx3(Codicon2, { name: "checklist", size: "1rem" }),
       /* @__PURE__ */ jsx3("span", { className: "text-sm font-semibold", children: "工作台" }),
@@ -1969,6 +2014,34 @@ function WorkbenchBoardPage() {
             variant: "outline",
             onClick: () => $showArchived.set(!$showArchived.get()),
             children: showArchived ? "隐藏已归档" : "显示已归档"
+          }
+        ),
+        /* @__PURE__ */ jsx3("div", { className: "flex items-center rounded-md border border-(--ui-stroke-secondary) p-0.5", children: [
+          ["all", "全部"],
+          ["today", "今天到期"],
+          ["overdue", "已超期"]
+        ].map(([key, label]) => /* @__PURE__ */ jsx3(
+          "button",
+          {
+            type: "button",
+            className: cn3(
+              "rounded px-2 py-0.5 text-[0.75rem] transition-colors",
+              dueFilter === key ? "bg-(--ui-accent) text-white" : "text-(--ui-text-tertiary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-text-primary)"
+            ),
+            onClick: () => $dueFilter.set(key),
+            children: label
+          },
+          key
+        )) }),
+        /* @__PURE__ */ jsxs3(
+          "span",
+          {
+            className: "flex items-center gap-1 text-[0.75rem] text-(--ui-text-secondary)",
+            title: healthData?.last_error ? `最近错误：${healthData.last_error.job} / ${healthData.last_error.reason}` : `scheduler=${healthData?.scheduler_alive ?? "?"} 错误=${healthData?.error_count ?? "?"} 投递待重试=${healthData?.delivery_pending ?? "?"}`,
+            children: [
+              /* @__PURE__ */ jsx3("span", { className: `size-2 rounded-full ${healthTone}` }),
+              /* @__PURE__ */ jsx3("span", { children: healthLabel })
+            ]
           }
         ),
         /* @__PURE__ */ jsxs3(Button2, { size: "sm", variant: "outline", onClick: () => setShowSettings(true), title: "工作台设置", children: [

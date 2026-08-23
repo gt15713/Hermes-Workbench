@@ -26,6 +26,7 @@ import { Component, useCallback, useEffect, useMemo, useRef, useState, type Reac
 
 import {
   $collapsedSections,
+  $dueFilter,
   $filterText,
   $tagFilter,
   $showArchived,
@@ -43,6 +44,7 @@ import {
   fetchBoard,
   fetchBrief,
   fetchFile,
+  fetchHealth,
   fetchSearch,
   fetchSettings,
   ingestMessage,
@@ -534,6 +536,12 @@ function WbSectionView({ section, onPreview, openMenuKey, onMenuOpenChange, mult
   const filterText = useValue($filterText).toLowerCase()
   const tagFilter = useValue($tagFilter)
   const showArchived = useValue($showArchived)
+  // P0-3：到期/超期快捷筛选
+  const dueFilter = useValue($dueFilter)
+  const todayLocal = useMemo(() => {
+    const n = new Date()
+    return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`
+  }, [])
 
   // 补丁 15：聚合文件按条目展开（阶段 1 语义回归修复）——待验证/待回看/心理学随想/
   // 梦中的邮件（entry_count > 0）按 ## 条目逐条展开成卡；任务/已处理/回收站整文件一卡。
@@ -560,11 +568,16 @@ function WbSectionView({ section, onPreview, openMenuKey, onMenuOpenChange, mult
     }
     return expanded.filter(c =>
       (tagFilter ? (c.tags?.includes(tagFilter) ?? false) : true) &&
+      (dueFilter === 'all'
+        ? true
+        : c.due
+          ? dueFilter === 'today' ? c.due === todayLocal : c.due < todayLocal
+          : false) &&
       (!filterText ||
         c.title.toLowerCase().includes(filterText) ||
         c.file.toLowerCase().includes(filterText))
     )
-  }, [expanded, filterText, tagFilter, showArchived, section.key])
+  }, [expanded, filterText, tagFilter, dueFilter, todayLocal, showArchived, section.key])
 
   // 二级折叠逻辑保留但默认关闭（showAllArchived=true 恒显示全部；按钮不出现）
   const ARCHIVED_PREVIEW_LIMIT = 10
@@ -1336,6 +1349,13 @@ export function WorkbenchBoardPage() {
   const [showNewTask, setShowNewTask] = useState(false)
   // 2026-08-22：设置浮窗（路径/分区/定时/保留/投递）
   const [showSettings, setShowSettings] = useState(false)
+  // P0-3：链路健康 + 投递配置 + 到期筛选（hooks 无条件在顶部）
+  const health = useQuery({ queryKey: ['workbench', 'health'], queryFn: fetchHealth, refetchInterval: 30_000 })
+  const settings = useQuery({ queryKey: ['workbench', 'settings'], queryFn: fetchSettings })
+  const dueFilter = useValue($dueFilter)
+  const [bannerDismissedDate, setBannerDismissedDate] = useState(
+    () => (typeof localStorage === 'undefined' ? '' : (localStorage.getItem('wbDeliveryBannerDismissedDate') || ''))
+  )
   // P0-1（B4）：今日视图 = 默认首页（不新增路由；看板态可切回）
   const [showToday, setShowToday] = useState(true)
   // P0-1：待确认 badge = 待验证分区条目数（点击 → 看板并展开 thought 分区）
@@ -1434,8 +1454,54 @@ export function WorkbenchBoardPage() {
   }
   if (!board) return null
 
+  const deliverMissing = settings.data?.ok === true && !settings.data.config.deliver_target
+  const showDeliveryBanner = !!deliverMissing && bannerDismissedDate !== board.today
+  const healthData = health.data
+  const healthTone = !healthData
+    ? 'bg-[#94a3b8]'
+    : (!healthData.scheduler_alive || healthData.error_count > 0 || healthData.delivery_pending)
+      ? 'bg-[#f87171]'
+      : healthData.vault_configured
+        ? 'bg-[#34d399]'
+        : 'bg-[#fbbf24]'
+  const healthLabel = !healthData
+    ? '健康检查…'
+    : !healthData.scheduler_alive
+      ? '调度器未运行'
+      : healthData.error_count > 0
+        ? `错误 ${healthData.error_count}`
+        : healthData.delivery_pending
+          ? '投递待重试'
+          : healthData.vault_configured
+            ? '链路正常'
+            : '链路正常（未配 vault）'
+
   return (
     <div className="wb-root flex h-full flex-col">
+      {/* P0-3：未配置投递横幅 */}
+      {showDeliveryBanner && (
+        <div className="flex items-center gap-2 border-b border-[#fbbf24]/30 bg-[#fbbf24]/10 px-3 py-1.5 text-[0.75rem] text-[#fbbf24]">
+          <Codicon name="warning" size="0.8rem" />
+          <span>投递目标未配置，日报/提醒不会发送到 QQ。</span>
+          <button
+            type="button"
+            className="rounded border border-[#fbbf24]/40 px-1.5 py-0.5 hover:bg-[#fbbf24]/20"
+            onClick={() => setShowSettings(true)}
+          >
+            去设置
+          </button>
+          <button
+            type="button"
+            className="text-[0.6875rem] text-[#fbbf24]/70 hover:text-[#fbbf24]"
+            onClick={() => {
+              setBannerDismissedDate(board.today)
+              localStorage.setItem('wbDeliveryBannerDismissedDate', board.today)
+            }}
+          >
+            今日忽略
+          </button>
+        </div>
+      )}
       {/* Toolbar */}
       <div className="flex items-center gap-2 border-b border-(--ui-stroke-secondary) px-3 py-2">
         <Codicon name="checklist" size="1rem" />
@@ -1545,6 +1611,38 @@ export function WorkbenchBoardPage() {
           >
             {showArchived ? '隐藏已归档' : '显示已归档'}
           </Button>
+          {/* P0-3：到期/超期快捷筛选 */}
+          <div className="flex items-center rounded-md border border-(--ui-stroke-secondary) p-0.5">
+            {([
+              ['all', '全部'],
+              ['today', '今天到期'],
+              ['overdue', '已超期'],
+            ] as const).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                className={cn(
+                  'rounded px-2 py-0.5 text-[0.75rem] transition-colors',
+                  dueFilter === key
+                    ? 'bg-(--ui-accent) text-white'
+                    : 'text-(--ui-text-tertiary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-text-primary)'
+                )}
+                onClick={() => $dueFilter.set(key)}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          {/* P0-3：链路健康条 */}
+          <span
+            className="flex items-center gap-1 text-[0.75rem] text-(--ui-text-secondary)"
+            title={healthData?.last_error
+              ? `最近错误：${healthData.last_error.job} / ${healthData.last_error.reason}`
+              : `scheduler=${healthData?.scheduler_alive ?? '?'} 错误=${healthData?.error_count ?? '?'} 投递待重试=${healthData?.delivery_pending ?? '?'}`}
+          >
+            <span className={`size-2 rounded-full ${healthTone}`} />
+            <span>{healthLabel}</span>
+          </span>
           {/* 2026-08-22：个性化设置 */}
           <Button size="sm" variant="outline" onClick={() => setShowSettings(true)} title="工作台设置">
             <Codicon name="gear" size="0.7rem" />

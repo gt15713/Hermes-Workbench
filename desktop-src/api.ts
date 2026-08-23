@@ -27,6 +27,10 @@ export const $tagFilter = atom<string>('')
 /** Whether to show done/trash sections. */
 export const $showArchived = atom<boolean>(false)
 
+/** P0-3：到期/超期快捷筛选（all | today | overdue）。 */
+export type WbDueFilter = 'all' | 'today' | 'overdue'
+export const $dueFilter = atom<WbDueFilter>('all')
+
 /** Task 5.2 批次 3：视图模式（board 看板 / table 表格）。Phase 0-1：List 已删。持久化。 */
 export type WbViewMode = 'board' | 'table'
 export const $viewMode = atom<WbViewMode>('board')
@@ -37,6 +41,7 @@ const COLLAPSED_KEY = 'wbCollapsedSections.v2'
 const SHOW_ARCHIVED_KEY = 'wbShowArchived'
 const VIEW_MODE_KEY = 'wbViewMode'
 const TAG_FILTER_KEY = 'wbTagFilter'
+const DUE_FILTER_KEY = 'wbDueFilter'
 
 // ── bind ─────────────────────────────────────────────────────────────
 
@@ -57,6 +62,7 @@ export function bindApi(r: Rest, storage: PluginStorage, socket: Socket): () => 
   persist($showArchived, SHOW_ARCHIVED_KEY, false)
   persist($viewMode, VIEW_MODE_KEY, 'board')
   persist($tagFilter, TAG_FILTER_KEY, '')
+  persist($dueFilter, DUE_FILTER_KEY, 'all')
   // Phase 0-1：存量 $viewMode='list' 回落 'board'（List 视图已删除；storage 旧值兼容）
   if (($viewMode.get() as string) === 'list') $viewMode.set('board')
 
@@ -134,6 +140,19 @@ export const fetchBrief = () =>
 
 /** 2026-08-22：设置面板——读取配置（路径/分区/定时/保留/投递）。 */
 export const fetchSettings = () => call<WbSettingsResponse>('/settings')
+
+/** P0-3：链路健康（/health 扩展：scheduler 租约/错误计数/投递待重试/vault 配置）。 */
+export interface WbHealth {
+  ok: boolean
+  db: boolean
+  scheduler_alive: boolean
+  error_count: number
+  last_error?: { job: string; at: string; reason: string } | null
+  delivery_pending: boolean
+  vault_configured: boolean
+  ts: string
+}
+export const fetchHealth = () => call<WbHealth>('/health')
 
 /** 2026-08-22：设置面板——保存配置。 */
 export const saveSettings = (body: WbSettings) =>
