@@ -41,10 +41,8 @@ jobs:
       - name: Layout regression (node:test)
         run: node --test desktop-src/layout-regression.test.mjs
 
-      # - name: Typecheck
-      #   run: cd desktop-src && npx tsc --noEmit
-      #   ⚠️ 2026-08-23：desktop-src 无 tsconfig.json（从未入库），tsc 无输入必失败。
-      #   待 CoderX 补 tsconfig + 类型错误清零后恢复本步骤。构建由 esbuild 承担。
+      - name: Typecheck
+        run: cd desktop-src && npx tsc --noEmit
 
       - name: Bundle rebuild check (plugin.js 进仓库一致性)
         run: |

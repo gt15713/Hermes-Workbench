@@ -32,7 +32,7 @@ interface OperationResult {
 
 export interface WorkbenchExecutionDeps {
   prepare(input: WorkbenchExecutionInput): Promise<PreparedTask>
-  createSession(input: { source: string; title: string; cwd: string }): Promise<SessionHandle>
+  createSession(input: { source: string; title: string; cwd?: string }): Promise<SessionHandle>
   bind(dir: string, file: string, storedSessionId: string): Promise<OperationResult>
   submit(runtimeSessionId: string, text: string): Promise<unknown>
   rollback(dir: string, file: string, reason: string): Promise<OperationResult>

@@ -363,10 +363,10 @@ def _run_script(
     timeout: int = _SCRIPT_TIMEOUT,
     env: Optional[dict] = None,
 ) -> dict:
-    """运行脚本（P0-A 双源：HERMES_HOME/scripts 优先、插件包 scripts/ 兜底）。"""
-    script = _SCRIPTS_DIR / name
+    """运行脚本（P0-A 收编完成：插件包 scripts/ 优先、HERMES_HOME/scripts 兜底）。"""
+    script = _PLUGIN_SCRIPTS_DIR / name
     if not script.is_file():
-        script = _PLUGIN_SCRIPTS_DIR / name
+        script = _SCRIPTS_DIR / name
     if not script.is_file():
         raise FileNotFoundError(f"workbench script missing: {script}")
     proc = subprocess.run(

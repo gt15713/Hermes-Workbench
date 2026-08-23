@@ -7,7 +7,7 @@ interface Harness {
   boundSession: null | string
   promptSubmitted: boolean
   submittedText: string
-  createCwd: string
+  createCwd: string | undefined
 }
 
 function makeHarness(overrides: Partial<WorkbenchExecutionDeps> & { scope?: 'research' | 'ingest' | 'execute' } = {}) {
