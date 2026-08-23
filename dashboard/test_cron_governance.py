@@ -6,7 +6,6 @@ import os
 from datetime import date, timedelta
 from pathlib import Path
 
-
 # P0-A：脚本随插件包分发；memory-audit.py 属 Hermes 侧脚本（非插件资产）
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "workbench_archive.py"
 MEMORY_AUDIT = Path(os.environ.get("HERMES_HOME", "")) / "scripts" / "memory-audit.py"

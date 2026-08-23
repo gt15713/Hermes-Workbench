@@ -9,8 +9,6 @@
 
 运行：cd dashboard && python -m pytest test_plugin_api.py -v
 """
-import os
-import re
 import sys
 from pathlib import Path
 
@@ -19,7 +17,6 @@ import pytest
 sys.path.insert(0, str(Path(__file__).parent))
 
 import plugin_api as api  # noqa: E402
-
 
 # ---------- 夹具：临时工作台根 ----------
 
@@ -447,7 +444,7 @@ class TestBoardHonesty:
                     if f["file"] == "multisection.md":
                         assert f["entry_count"] == 0, f"expect 0 entries, got {f['entry_count']}"
                         return  # found it, assertion passed
-        assert False, "multisection.md not found in board"
+        raise AssertionError("multisection.md not found in board")
 
     def test_aggregation_file_shows_entries(self, wb):
         """聚合文件（待验证）的 ## 标题展开为条目——entry_count=N。"""
@@ -461,7 +458,7 @@ class TestBoardHonesty:
                     if f["file"] == "2026-08-15.md":
                         assert f["entry_count"] == 3, f"expect 3 entries, got {f['entry_count']}"
                         return
-        assert False, "2026-08-15.md not found in board"
+        raise AssertionError("2026-08-15.md not found in board")
 
     def test_done_date_index_not_in_board(self, wb):
         """08-21：已处理/日期格式索引文件（YYYY-MM-DD.md）不再渲染成卡
@@ -473,7 +470,7 @@ class TestBoardHonesty:
             if sec["key"] == "done":
                 assert all(f["file"] != "2026-08-15.md" for f in sec["files"]), "日期索引不应出现在看板"
                 return
-        assert False, "done 分区缺失"
+        raise AssertionError("done 分区缺失")
 
     def test_done_single_task_file_not_expanded(self, wb):
         """已处理/单任务文件（非日期格式名）整文件一卡，entry_count=0。"""
@@ -486,7 +483,7 @@ class TestBoardHonesty:
                     if f["file"] == "完成的任务.md":
                         assert f["entry_count"] == 0, f"expect 0 entries, got {f['entry_count']}"
                         return
-        assert False, "完成的任务.md not found in board"
+        raise AssertionError("完成的任务.md not found in board")
 
     def test_pending_count_aggregation_only(self, wb):
         """pending 计数：任务文件多 ## 不计入 pending 膨胀，聚合文件条目正确计入。"""
@@ -767,7 +764,6 @@ class TestStage0Timezone:
 
     def test_overdue_uses_backend_today(self, wb):
         """/board 返回的 due 字符串与 today 比较——前端用 s.today，不依赖 UTC Date。"""
-        import asyncio
         from datetime import date, timedelta
         # 明天到期的任务 → 不应逾期
         future = (date.today() + timedelta(days=1)).isoformat()
@@ -829,7 +825,6 @@ class TestStage0ExecuteSingleTrack:
 
     def test_execute_returns_in_progress(self, wb):
         import asyncio
-        from datetime import date
         p = wb / "任务" / "execute-test.md"
         _write(p, "---\ntype: task\nstatus: todo\n---\n\n# 执行测试\n")
         r = asyncio.run(api.execute_task({"dir": "任务", "file": "execute-test.md", "launch": False}))

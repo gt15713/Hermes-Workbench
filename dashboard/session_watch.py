@@ -197,7 +197,8 @@ def _extract_summary(text: str) -> str | None:
     if nxt:
         seg = seg[: nxt.start()]
     body = " ".join(
-        l.strip() for l in seg.splitlines() if l.strip() and not l.strip().startswith("#") and not l.strip().startswith("```")
+        line.strip() for line in seg.splitlines()
+        if line.strip() and not line.strip().startswith("#") and not line.strip().startswith("```")
     ).strip()
     return body[:120] if body else None
 

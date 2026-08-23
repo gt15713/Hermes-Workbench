@@ -6,10 +6,8 @@
 
 用法：python workbench_db_migrate.py [--root <工作台根>] [--db <path>]
 """
-import os
 import argparse
 import sys
-from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "dashboard"))
@@ -41,7 +39,6 @@ def main() -> int:
             continue
         for p in files:
             text = p.read_text(encoding="utf-8", errors="replace")
-            mtime = p.stat().st_mtime
             if not args.dry_run:
                 db.write_text(p, text)
             total += 1

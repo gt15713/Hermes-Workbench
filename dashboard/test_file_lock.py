@@ -8,8 +8,7 @@ import time
 from pathlib import Path
 
 import pytest
-
-from repo import FileLock, FileRepo
+from repo import FileLock
 
 _DASH = Path(__file__).resolve().parent
 

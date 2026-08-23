@@ -11,7 +11,6 @@ import os
 import re
 import subprocess
 import sys
-import time
 from pathlib import Path
 
 HERMES_HOME = Path(__file__).resolve().parent.parent.parent.parent  # dashboard → workbench-view → plugins → hermes
@@ -22,7 +21,7 @@ OK, NG = [], []
 
 def find_port():
     lines = LOG.read_text(encoding="utf-8", errors="replace").splitlines()
-    ports = [m.group(1) for l in lines if (m := re.search(r"HERMES_BACKEND_READY port=(\d+)", l))]
+    ports = [m.group(1) for line in lines if (m := re.search(r"HERMES_BACKEND_READY port=(\d+)", line))]
     if not ports:
         NG.append("desktop.log 无 HERMES_BACKEND_READY")
         return None
@@ -64,6 +63,7 @@ def main():
     def ws_gate():
         # /events 已改为 WebSocket（对齐 kanban）。无凭证连接 → 1008（鉴权门生效）
         import asyncio
+
         import websockets
 
         async def _try():
@@ -80,8 +80,8 @@ def main():
 
     def mtime_smoke():
         # 临时库 + DualRepo 真实写路径：expected_mtime 冲突拦截
-        import tempfile
         import importlib.util
+        import tempfile
         from pathlib import Path as P
 
         root = P(tempfile.mkdtemp(prefix="wb-reg-"))

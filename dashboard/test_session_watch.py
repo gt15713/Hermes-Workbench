@@ -7,15 +7,12 @@
 from pathlib import Path
 
 import pytest
-
+from contract import PARTITION_NAMES
 from session_watch import (
     apply_result,
     decide,
     run_watch,
-    scan_in_progress,
 )
-
-from contract import PARTITION_NAMES
 
 
 @pytest.fixture()

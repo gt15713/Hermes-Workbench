@@ -44,6 +44,7 @@ _STATUS_RE = re.compile(r"^status:\s*(.+?)\s*$", re.M)
 
 # 写操作全局锁（脚本单进程，文件级原子写兜底）
 import threading
+
 _WRITE_LOCK = threading.Lock()
 
 

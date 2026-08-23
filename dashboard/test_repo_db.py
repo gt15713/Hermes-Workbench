@@ -8,15 +8,14 @@
 
 运行：cd dashboard && python -m pytest test_repo_db.py -v
 """
-import sys
 import sqlite3
+import sys
 from pathlib import Path
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from contract import PARTITION_NAMES  # noqa: E402
 from repo import (  # noqa: E402
     DualRepo,
     FileRepo,
@@ -228,7 +227,6 @@ class TestDualRepo:
     def test_ingest_idempotent(self, fs_root, tmp_path):
         """同 message_id 已消费 → 不重复（done 跳过）。"""
         db = SqliteRepo(tmp_path / "wb.db", root=fs_root)
-        p = fs_root / "待验证" / "x.md"
         assert not db.ingest_exists("m1")
         db.ingest_upsert("m1", "待验证", "x.md", "processing")  # claim
         assert not db.ingest_exists("m1")  # processing = 崩溃残留，可重放

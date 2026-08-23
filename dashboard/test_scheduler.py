@@ -159,7 +159,7 @@ class TestJobRunners:
         monkeypatch.setattr(scheduler, "_PLUGIN_SCRIPTS_DIR", tmp_path)  # 双源都指向空目录
         try:
             scheduler._job_maintenance(None)
-            assert False, "should raise FileNotFoundError"
+            raise AssertionError("should raise FileNotFoundError")
         except FileNotFoundError:
             pass
 

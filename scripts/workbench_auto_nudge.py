@@ -283,13 +283,13 @@ def main() -> int:
         return 0
 
     lines = [f"⏰ 工作台超期任务提醒（{len(overdue)} 项，截至 {TODAY.isoformat()}）", ""]
-    for filename, title, due, days in overdue:
+    for _filename, title, due, days in overdue:
         lines.append(f"- {title}（due {due}，超期 {days} 天）")
     blocked = scan_blocked()
     if blocked:
         lines.append("")
         lines.append("🚧 被阻塞任务（#阻塞）：")
-        for filename, title in blocked:
+        for _filename, title in blocked:
             lines.append(f"- {title}")
     output = "\n".join(lines)
 

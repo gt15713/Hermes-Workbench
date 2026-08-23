@@ -8,18 +8,10 @@
 - 与 plugin_api 死代码清理的一致性（_STATUS_LABEL/_TYPE_LABEL 已删）
 """
 import pytest
-
 from contract import (
     ALL_ACTIONS,
     ALL_STATUSES,
     SCHEMA_VERSION,
-    STATUS_ABANDONED,
-    STATUS_CLEARED,
-    STATUS_COMPLETED,
-    STATUS_CONVERTED,
-    STATUS_IN_PROGRESS,
-    STATUS_PENDING,
-    STATUS_TODO,
     STATUS_LABEL,
     can_transition,
     is_valid_status,

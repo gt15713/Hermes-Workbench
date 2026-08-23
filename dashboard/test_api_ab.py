@@ -10,10 +10,9 @@ import os
 import sqlite3
 from pathlib import Path
 
+import plugin_api
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-
-import plugin_api
 from wb_utils import _extract_frontmatter
 
 _app = FastAPI()

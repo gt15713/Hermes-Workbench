@@ -74,7 +74,7 @@ class FileLock:
                 if _time.monotonic() >= deadline:
                     self._fd.close()
                     self._fd = None
-                    raise TimeoutError(f"workbench file lock timeout: {self.lock_path}")
+                    raise TimeoutError(f"workbench file lock timeout: {self.lock_path}") from None
                 _time.sleep(self.poll)
 
     def __exit__(self, *exc) -> None:

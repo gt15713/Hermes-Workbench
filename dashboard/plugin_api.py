@@ -13,23 +13,22 @@ P0 修复（2026-08-09 辩论收敛）：
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import re
-import threading
-import asyncio
-import time
-from datetime import datetime
-from pathlib import Path
-
-from fastapi import APIRouter
-from fastapi import WebSocket, WebSocketDisconnect
 
 # P0 修复（2026-08-14）：web_server 用 spec_from_file_location 单文件加载插件
 # api 文件，不把 dashboard 目录加入 sys.path——同目录模块（contract/repo/wb_utils）
 # 必须由本文件显式插入（对齐 scripts/workbench_db_migrate.py 的做法）。
 import sys as _sys
+import threading
+import time
+from datetime import datetime
+from pathlib import Path
 from pathlib import Path as _Path
+
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 _DASHBOARD_DIR = str(_Path(__file__).resolve().parent)
 if _DASHBOARD_DIR not in _sys.path:
@@ -38,27 +37,21 @@ if _DASHBOARD_DIR not in _sys.path:
 from contract import (
     PARTITIONS,
     SCHEMA_VERSION,
-    SCHEMA_VERSION_FIELD,
 )
-from repo import FileRepo, _repo as file_repo
+from repo import _repo as file_repo
 from wb_utils import (
-    LOG_DIR,
     WORKBENCH_ROOT,
-    _META_PREFIXES,
-    _SECTION_CHILD_PREFIXES,
     _ensure_completed_at,
     _ensure_schema_version,
     _extract_frontmatter,
     _match_task,
     _maybe_defer,
-    _migrate_schema,
     _parse_md,
     _patch_frontmatter,
     _replace_frontmatter_status,
     _safe_resolve,
     _slugify,
     _split_entry,
-    _yaml_value,
     detect_task_scope,
     existing_video_url,
 )
@@ -578,7 +571,6 @@ def recent(limit: int = 10, dir: str = "", file: str = "") -> dict:
             evts = []
         return {"entries": evts, "source": "task_events"}
 
-    from datetime import date as _date
 
     LOG_DIR = WORKBENCH_ROOT / "日志"
     entries = []
@@ -649,7 +641,7 @@ async def batch(body: dict) -> dict:
         action_cn = {"resolve": "批量确认处理", "to-task": "批量转任务", "trash": "批量移入回收站", "complete": "批量完成"}.get(action, action)
         _log_action(action_cn, f"{len(done)} 项成功" + (f"，{len(failed)} 项失败" if failed else "") + "：" + "、".join(
             f"{d['file']}" + (f"#{d['entry']}" if d["entry"] else "") for d in done[:20]
-        ) + (f" 等" if len(done) > 20 else ""))
+        ) + (" 等" if len(done) > 20 else ""))
 
     return {"ok": not failed or bool(done), "done": done, "failed": failed, "summary": {"ok": len(done), "fail": len(failed)}}
 
@@ -1057,7 +1049,6 @@ async def restore(body: dict) -> dict:
         filename = (body.get("file") or "").strip()
         if not filename:
             return {"ok": False, "error": "file required"}
-        trash_dir = WORKBENCH_ROOT / "回收站"
         p = _safe_resolve("回收站", filename)
         if p is None or not p.is_file():
             return {"ok": False, "error": "not found in trash"}
@@ -1287,7 +1278,6 @@ async def defer_task(body: dict) -> dict:
     body={"dir": "任务", "file": "xxx.md"} 或 {"title": "任务标题"}
     同一任务顺延 3 次后停止，返回 stuck=True（前端显示「卡住」）。
     """
-    from datetime import date as _date
 
     with _WRITE_LOCK:
         target = None
@@ -1591,7 +1581,7 @@ async def edit_entry(body: dict) -> dict:
         if not changed:
             return {"ok": False, "error": "nothing to change"}
         _atomic_write(p, text, expected_mtime=mt)
-    _log_action("✎ 编辑", f"「{p.stem}」" + (f"#{entry_title}" if entry_title else "") + (f"；字段:tags/priority" if (tag_list or priority) and not entry_title else "") + " 已更新" if changed else "")
+    _log_action("✎ 编辑", f"「{p.stem}」" + (f"#{entry_title}" if entry_title else "") + ("；字段:tags/priority" if (tag_list or priority) and not entry_title else "") + " 已更新" if changed else "")
     fields_note = ""
     if not entry_title and (tag_list or priority):
         parts = []
@@ -1612,7 +1602,7 @@ async def delete_file(body: dict) -> dict:
     """
     dirname = str(body.get("dir") or "")
     filename = str(body.get("file") or "")
-    
+
     # 仅回收站（trash）和已处理（done）分区可用
     expected_keys = {"trash", "done"}
     candidate_key = None
@@ -1631,7 +1621,7 @@ async def delete_file(body: dict) -> dict:
         # 磁盘删除 + DB 清除（DualRepo.delete 双写）
         file_repo.delete(target)
         # task_events 记录
-        file_repo.event(dirname, filename, "deleted", f"永久删除")
+        file_repo.event(dirname, filename, "deleted", "永久删除")
 
         _log_action("永久删除", f"「{filename}」从{dirname}彻底删除（磁盘 + DB + events）")
 

@@ -4,6 +4,12 @@ target-version = "py311"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W", "B"]
+ignore = [
+  "E501",  # 行长风格债（存量中文长行；CI 保留 F/B 硬性类，行长留待发布后整治）
+]
 
 [tool.ruff.lint.per-file-ignores]
 "test_*.py" = ["E501"]
+"dashboard/plugin_api.py" = ["E402"]  # 单文件加载自插 sys.path，设计使然
+"dashboard/repo.py" = ["E402"]        # 兼容旧引用的命名空间包处理
+"scripts/*.py" = ["E402"]             # 自插 dashboard sys.path

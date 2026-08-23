@@ -8,7 +8,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import pytest  # noqa: E402
-
 import workbench_config as wc  # noqa: E402
 from repo import DualRepo, FileRepo, SqliteRepo  # noqa: E402
 
@@ -17,7 +16,12 @@ from repo import DualRepo, FileRepo, SqliteRepo  # noqa: E402
 def dual(tmp_path):
     for d in ("待验证", "待回看", "任务", "已处理", "回收站"):
         (tmp_path / d).mkdir(parents=True, exist_ok=True)
-    return DualRepo(FileRepo(root=tmp_path), SqliteRepo(root=tmp_path)), tmp_path
+    # 每测试独立 DB（fixture 传 db_path；否则回落会话级共享 test-workbench.db，
+    # 前序 write 测试污染 file_only 断言 → 顺序依赖失败）
+    return (
+        DualRepo(FileRepo(root=tmp_path), SqliteRepo(root=tmp_path, db_path=tmp_path / "test.db")),
+        tmp_path,
+    )
 
 
 class TestStorageModeConfig:

@@ -8,11 +8,10 @@
 
 符合「保留事实时间，不静默改写截止日」：orig_due 永久保留，due 变更是可追溯的。
 """
-import re
-import subprocess
-import sys
-import os
 import datetime
+import os
+import re
+import sys
 from pathlib import Path
 
 # P0-A：env 注入优先；手动运行回落中立默认

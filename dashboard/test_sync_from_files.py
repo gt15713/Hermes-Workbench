@@ -7,7 +7,6 @@
 from pathlib import Path
 
 import pytest
-
 from contract import PARTITION_NAMES
 from repo import DualRepo, FileRepo, SqliteRepo
 

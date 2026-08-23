@@ -9,11 +9,10 @@ import asyncio
 from datetime import date
 from pathlib import Path
 
-import pytest
-
 import plugin_api as api
+import pytest
 from repo import FileRepo
-from service import WorkbenchService, build_service
+from service import build_service
 
 
 @pytest.fixture()

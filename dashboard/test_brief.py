@@ -5,13 +5,10 @@
 """
 
 import json
-import time
-
-import pytest
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
 
 import plugin_api
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
 
 _app = FastAPI()
 _app.include_router(plugin_api.router)

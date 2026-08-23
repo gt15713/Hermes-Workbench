@@ -13,8 +13,7 @@ from datetime import datetime
 from pathlib import Path
 
 import yaml
-
-from contract import PARTITION_NAMES, SCHEMA_VERSION, SCHEMA_VERSION_FIELD
+from contract import SCHEMA_VERSION, SCHEMA_VERSION_FIELD
 
 _log = logging.getLogger("workbench-view")
 
@@ -348,7 +347,7 @@ def _split_entry(text: str, entry_title: str) -> tuple[str, str]:
         if re.match(r"^##\s+", line):
             section_starts.append(i)
     if not section_starts:
-        raise ValueError(f"no sections in file")
+        raise ValueError("no sections in file")
     # 精确定位目标条目（排除 原始消息/备注 等二级小节）
     target_idx = None
     for si, start in enumerate(section_starts):
@@ -393,7 +392,8 @@ def _maybe_defer(path: Path) -> dict | None:
     返回 {"stuck": True, "count": N}（前端显示「卡住」红色标记）。
     """
     import threading
-    from datetime import date as _date, timedelta as _td
+    from datetime import date as _date
+    from datetime import timedelta as _td
 
     _WRITE_LOCK = threading.RLock()
 

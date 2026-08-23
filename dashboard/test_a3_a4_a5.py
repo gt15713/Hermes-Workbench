@@ -14,8 +14,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-import plugin_api as api  # noqa: E402
 import auto_archive  # noqa: E402
+import plugin_api as api  # noqa: E402
 import repo as repo_mod  # noqa: E402
 import ttl  # noqa: E402
 import wb_utils as wb_utils_mod  # noqa: E402

@@ -8,7 +8,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 import pytest  # noqa: E402
-
 from repo import DualRepo, FileRepo, SqliteRepo  # noqa: E402
 
 

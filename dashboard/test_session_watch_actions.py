@@ -1,13 +1,11 @@
 # -*- coding: utf-8 -*-
 """C3（P1-1）：会话→任务提取——行动项解析 / ingest 落待验证 / 幂等 / 每日上限 / 低置信合并。"""
 
-import asyncio
 from datetime import date as _date
 from pathlib import Path
 
-import pytest
-
 import plugin_api as api
+import pytest
 import session_watch as sw
 
 

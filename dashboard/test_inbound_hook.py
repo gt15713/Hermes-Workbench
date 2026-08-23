@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from types import SimpleNamespace  # noqa: E402
 
 import wb_utils  # noqa: E402
-from inbound_hook import build_ingest_body, _on_pre_gateway_dispatch  # noqa: E402
+from inbound_hook import _on_pre_gateway_dispatch, build_ingest_body  # noqa: E402
 
 
 class TestShouldAutoRegister:
