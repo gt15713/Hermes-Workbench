@@ -130,6 +130,9 @@ def _pid_alive(pid: int) -> bool:
         return True
     except OSError:
         return False
+    except Exception:  # 2026-08-23：Windows os.kill 偶发「exception set」（非 OSError），
+        # 多进程抢租约时会让调度线程崩溃 → 桌面端反复重启 → 渲染连接超时「后端已停止」。
+        return False
 
 
 class _Lease:
