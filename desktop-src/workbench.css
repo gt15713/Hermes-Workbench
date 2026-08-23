@@ -1,0 +1,58 @@
+/* Workbench plugin styles */
+.wb-root {
+  font-size: 0.875rem;
+  line-height: 1.55;
+}
+
+.wb-column {
+  scrollbar-width: thin;
+}
+
+.wb-card {
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+/* 2026-08-22 等宽看板（已拍板）：展开列固定 16rem。
+   宿主 Tailwind 不含 w-[16rem]/min-w-[14rem]/max-w-[18rem] 等任意值规则
+   （已核验 dist CSS 无此类），此前列宽实为内容自适应 → 待验证区内容多被撑宽。
+   宽度写在本文件（构建时内联注入，100% 生效），不依赖宿主工具类。 */
+.wb-section {
+  width: 16rem;
+  min-width: 16rem;
+  max-width: 16rem;
+}
+
+/* 2026-08-22 弹窗尺寸修复：宿主 Tailwind 无 w-[min(52rem,94vw)] 规则
+   （已核验 dist CSS），此前弹窗落回 SDK 默认 max-w-lg(32rem) 小窗。
+   宽度写在本文件，构建时内联注入，100% 生效。 */
+.wb-dialog {
+  width: min(52rem, 94vw);
+  max-width: 94vw;
+}
+
+/* Compact rails keep inactive partitions visible without competing with the
+   Bots sidebar or the right-docked Cronjobs pane. */
+.wb-section--collapsed {
+  min-width: 2rem;
+  max-width: 2rem;
+  background-color: color-mix(in srgb, var(--ui-bg-quinary) 78%, var(--ui-bg));
+  border: 1px solid color-mix(in srgb, var(--ui-stroke-secondary) 82%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ui-bg) 18%, transparent);
+}
+
+/* Action menus are viewport overlays; the explicit z-index also clears the
+   Cronjobs pane's right-docked surface. */
+.wb-menu-overlay {
+  position: fixed;
+  z-index: 10020;
+}
+
+/* Pending badge pulse */
+@keyframes wb-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.wb-pending-badge {
+  animation: wb-pulse 2s ease-in-out infinite;
+}

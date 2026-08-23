@@ -1,0 +1,34 @@
+# Hermes Workbench 配置示例（实际运行使用 workbench-config.json，见 README）
+
+workbench-config.json:
+  version: 1
+  root: "~/Workbench"            # 工作台文件夹（默认 ~/Workbench）
+  vault: ""                      # Obsidian 知识库（空 = 日报不写工作日志）
+  deliver_target: ""             # QQ 投递目标 qqbot:<群 openid>（空 = 显式未配置）
+  partitions:                    # 固定 5 分区 + 用户自定义
+    - { name: 待验证, type: thought, fixed: true }
+    - { name: 待回看, type: video, fixed: true }
+    - { name: 任务, type: task, fixed: true }
+    - { name: 已处理, type: done, fixed: true }
+    - { name: 回收站, type: trash, fixed: true }
+  scheduler:
+    daily_report: { enabled: true, expr: "0 20 * * *" }
+    nudge:        { enabled: true, expr: "15 12 * * *" }
+    maintenance:  { enabled: true, expr: "30 12 * * *" }
+    lifecycle:    { enabled: true, expr: "*/10 * * * *" }
+  ttl: { days: 30, mode: archive }
+  write_worklog: false
+  catch_up_hours: 6              # 启动补跑窗口（小时；0=禁用；重启后补跑错过的日报/提醒/维护）
+  storage_mode: dual             # dual | db_only | file_only（一期默认仍 dual，二期翻转）
+
+# 环境变量覆盖（优先级高于配置文件）
+env:
+  WORKBENCH_ROOT: "工作台根目录"
+  WORKBENCH_DB: "workbench.db 路径"
+  WORKBENCH_DELIVER_TARGET: "QQ 投递目标 qqbot:<openid>"
+  WORKBENCH_BACKUP_DIR: "DB 备份目录（默认 <root>/../workbench-backups）"
+  WORKBENCH_TTL_DAYS: "回收站保留天数"
+  WORKBENCH_TTL_MODE: "archive | delete"
+  WORKBENCH_CONFIG: "配置文件路径（测试隔离用）"
+  WORKBENCH_CATCH_UP_HOURS: "启动补跑窗口小时数（0=禁用）"
+  WORKBENCH_STORAGE_MODE: "存储模式 dual | db_only | file_only"

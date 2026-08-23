@@ -1,0 +1,105 @@
+# Hermes 健康审计报告
+
+日期：2026-08-15  
+范围：进程归属表 + 定时任务核对表  
+状态：审计完成，等待拍板（不擅自动手治理）
+
+---
+
+## 一、进程逐项归属表
+
+### 🟢 Hermes 生态（当前快照）
+
+| 组件 | PID | 状态 | 备注 |
+|:--|:--:|:--:|:--|
+| Hermes 桌面端 (Hermes.exe) | — | ❌ 未运行 | 桌面端已关闭 |
+| Python (agent) | — | — | 运行在远端服务器，本地无持久进程 |
+| Node.js | — | ❌ 未运行 | 桌面端未启动时本地无 node |
+| Gateway (wscript Hermes_Gateway.vbs) | — | ❌ 未运行 | cron 警告 "Gateway is not running" |
+| Hindsight (hindsight-api) | — | — | 本地进程不可见（通过 plan 任务守护） |
+
+### 🟡 第三方关联进程
+
+| 组件 | 实例数 | PID | 内存 | 说明 |
+|:--|:--:|:--|:--|:--|
+| ChatGPT (Codex) | **8** | 12684, 13768, 14844, 20144, 21548, 22708, 27876, 28668 | 792MB/456MB/... | 多实例，总耗内存大 |
+| PostgreSQL | **0** | — | — | 此前 port 5432 曾有进程，当前未运行 |
+| OpenClaw Gateway | — | — | — | 计划任务注册但当前未运行 |
+| CUA Driver (cua-driver) | — | — | — | 计划任务注册，serve 态 |
+
+### 其他系统进程（略）
+- 总进程数：约 100+（含系统 svchost 等）
+- MSI/Gaming 服务：MSI_Center, MysticLight 等多实例
+- Office/OneDrive 守护进程
+
+---
+
+## 二、定时任务核对表
+
+### Win32 计划任务（schtasks，已注册）
+
+| 任务名 | 触发器 | 当前状态 | 上次结果 | 备注 |
+|:--|:--|:--:|:--:|:--|
+| Hermes_Gateway | 登录时 | 准备就绪 | — | Gateway 入口 |
+| Hermes_DayMaintenance | 每日 05:05 | 已启用 | 0 | |
+| Hermes_NpmFix | 一次性 05:50 | 已启用 | 0 | 已执行 |
+| Hermes_SleepMaintenance | 一次性 23:15 | 已启用 | 0 | 已执行 |
+| Hindsight_Local | 登录时 + 每5min | 准备就绪 | 0 | TimeTrigger 自愈 |
+| BearScreenshot | 登录时 | — | — | 非 Hermes |
+| OpenClaw Gateway | 登录时 | 已启用 | 0 | |
+| CUA Driver (serve) | 登录时 | 已启用 | — | |
+
+### Hermes Cron 任务（注册于 Hermes Agent，共 14 个）
+
+| 名称 | 频率 | 下次运行 | 脚本 | 投递 |
+|:--|:--:|:--|:--|:--:|
+| 工作台归档巡检 | 每小时 0分 | 12:00 | workbench_archive.py | local |
+| 工作台每日日报 | 每日 20:00 | 20:00 | workbench_daily_report.py | QQ |
+| 工作台 DB 一致性校验 | 每日 08:45 | — | workbench_db_verify.py | origin |
+| Obsidian 每日自动备份 | 每日 02:00 | — | obsidian_backup.py | local |
+| Obsidian 周日 lint | 周日 08:00 | — | obsidian_lint.py | local |
+| Hermes 官方日报订阅 | 每日 08:00 | — | (agent) | origin |
+| Hermes 更新周检查提醒 | 周一 10:00 | — | check-hermes-update.sh | QQ |
+| 镜像新鲜度巡检 | 每日 08:30 | — | mirror_freshness_check.py | origin |
+| 观察期触发扫描 | 每周一 09:00 | — | observation_trigger_scan.py | origin |
+| 技能对账探针 | 每日 08:40 | — | skill_reconciliation_probe.py | origin |
+| Hindsight 每日备份 | 每日 09:00 | — | hindsight_backup.py | local |
+| Hindsight 记忆导出镜像 | 每日 09:10 | — | hindsight_export.py | local |
+| 技能观察期期满评审 | 2026-11-02 | — | (agent) | origin |
+| 月度健康审计 | 每月1日 09:00 | — | (agent) | origin |
+
+---
+
+## 三、显著发现
+
+### 🔍 1. ChatGPT (Codex) ×8 实例
+检测到 **8 个 ChatGPT.exe** 进程，内存占用从 7MB 到 792MB 不等，合计约 1.6GB。可能需要检查是否有僵尸实例。
+
+### 🔍 2. Hermes Gateway 未运行
+`hermes cron list` 报告 `⚠️ Gateway is not running — jobs won't fire automatically`。  
+原因：桌面端关闭后，gateway 独立守护进程可能也未启动。需要 `hermes gateway install` 重新激活。
+
+### 🔍 3. Hindsight 导出失败
+每日 09:10 的 hindsight_export.py 退出一码 1，原因：`<urlopen error [WinError 10061] 由于目标计算机积极拒绝，无法连接>`。  
+Hindsight 本地服务可能未及时响应。
+
+### 🔍 4. 总进程数
+约 100+ 系统/应用进程，含 8 个 ChatGPT、多个 Office 守护、MSI 灯控服务等，系统开销约 6-8GB 内存。
+
+### 🔍 5. 无独立 Hermes 后端进程
+Hermes 桌面端关闭后，后端 serve (plugin_api.py) 和 agent 进程均未运行，属正常状态。桌面端启动时自动拉起。
+
+---
+
+## 四、建议（待拍板）
+
+1. **清理僵尸 ChatGPT 实例** — 保留当前活动会话窗口，关闭无窗口的后台实例
+2. **重新激活 Gateway** — `hermes gateway install` 恢复投递通道
+3. **Hindsight 导出依赖** — 修复本地服务不响应问题（排查 backup 时间窗口竞争）
+4. **Hermes 后端进程** — 当前为桌面端关闭的正常状态，无需处理
+5. **PostgreSQL** — port 5432 当前无进程，此前短暂运行过（可能是某工具临时用）
+
+---
+
+*审计完成时间：2026-08-15 11:45*  
+*审计范围：只读，未做任何更改*

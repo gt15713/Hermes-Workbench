@@ -1,0 +1,26 @@
+# ── 运行时产物（含隐私，禁止入库） ─────────────
+workbench.db
+workbench.db-wal
+workbench.db-shm
+workbench-config.json
+scheduler.lock
+scheduler-state.json
+
+# ── 备份与调试残留 ───────────────────────────
+*.bak
+*.bak-*
+*~
+
+# ── 依赖与缓存 ──────────────────────────────
+node_modules/
+__pycache__/
+.pytest_cache/
+.vite/
+*.pyc
+
+# ── 构建元信息（含时间戳，避免提交噪音；plugin.js 本身进仓库） ──
+desktop/build-info.json
+
+# ── 本地环境 ────────────────────────────────
+.env
+.venv/

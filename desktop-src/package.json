@@ -1,0 +1,20 @@
+{
+  "name": "workbench-view-desktop",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Hermes Workbench 桌面前端源码（plugin front-end）。由 build-desktop.mjs 构建；运行时外部依赖 @hermes/plugin-sdk、react、react/jsx-runtime 由 Hermes 宿主提供。",
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=16"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.17",
+    "react": "^19.2.7",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  }
+}

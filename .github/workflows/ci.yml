@@ -1,0 +1,53 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Python deps
+        run: pip install pytest ruff pyyaml fastapi
+
+      - name: Ruff lint
+        run: ruff check dashboard scripts
+
+      - name: Pytest (dashboard)
+        run: python -m pytest dashboard -q
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Frontend deps
+        run: cd desktop-src && npm ci
+
+      - name: esbuild (bundle rebuild, --no-save 不锁 lock)
+        run: cd desktop-src && npm i --no-save esbuild
+
+      - name: Vitest
+        run: cd desktop-src && npx vitest run
+
+      - name: Layout regression (node:test)
+        run: node --test desktop-src/layout-regression.test.mjs
+
+      - name: Typecheck
+        run: cd desktop-src && npx tsc --noEmit
+
+      - name: Bundle rebuild check (plugin.js 进仓库一致性)
+        run: |
+          node build-desktop.mjs
+          git diff --exit-code desktop/plugin.js || {
+            echo "::error::desktop/plugin.js 与源码不一致——请运行 node build-desktop.mjs 后提交产物";
+            exit 1;
+          }
