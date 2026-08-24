@@ -65,6 +65,7 @@ const task = {
 describe('launchWorkbenchTask', () => {
   it('keeps a manual archive action available for completed tasks still in the task partition', () => {
     expect(canArchiveTask('task', 'completed', 'pending')).toBe(true)
+    expect(canArchiveTask('task', 'done', 'success')).toBe(true)
     expect(canArchiveTask('task', 'in_progress', 'success')).toBe(true)
     expect(canArchiveTask('task', 'in_progress', 'pending')).toBe(false)
     expect(canArchiveTask('task', 'in_progress', 'failure')).toBe(false)

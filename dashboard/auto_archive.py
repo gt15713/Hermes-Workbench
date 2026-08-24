@@ -50,7 +50,10 @@ def scan_execution_results(root: Path | None = None) -> list[tuple[str, str]]:
                 text = path.read_text(encoding="utf-8", errors="replace")
             except OSError:
                 continue
-            if _fm(text).get("status") == "completed":
+            frontmatter = _fm(text)
+            status = str(frontmatter.get("status") or "").strip().lower()
+            result = str(frontmatter.get("execution_result") or "").strip().lower()
+            if status == "completed" or (status == "done" and result == "success"):
                 out.append((path.name, "completed"))
     return out
 

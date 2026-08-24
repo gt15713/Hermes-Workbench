@@ -216,6 +216,21 @@ class TestCompleteInProgress:
 
 
 class TestAutoArchive:
+    def test_legacy_done_success_is_reconciled(self, wb):
+        """Agent 写入 legacy `done` 时也必须进入正式归档入口。"""
+        _write(
+            wb / "任务" / "legacy-done.md",
+            "---\ntype: task\nstatus: done\nsession_id: sess-legacy\n"
+            "execution_result: success\n---\n\n# 旧终态任务\n",
+        )
+
+        assert ("legacy-done.md", "completed") in auto_archive.scan_execution_results(root=wb)
+
+        result = auto_archive.reconcile("legacy-done.md", "completed")
+        assert result.get("ok") is True
+        assert not (wb / "任务" / "legacy-done.md").exists()
+        assert "status: completed" in (wb / "已处理" / "legacy-done.md").read_text(encoding="utf-8")
+
     def test_completed_task_stuck_in_task_partition_is_reconciled(self, wb):
         """外部完成写入不能让任务永久滞留在任务区。"""
         _write(

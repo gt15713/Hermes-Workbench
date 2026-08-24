@@ -58,6 +58,7 @@ export interface WorkbenchExecutionResult {
 export function canArchiveTask(sectionKey: string, status: string, executionResult?: string): boolean {
   if (sectionKey !== 'task') return false
   if (status === 'todo' || status === 'completed') return true
+  if (status === 'done') return executionResult === 'success'
   return status === 'in_progress' && executionResult === 'success'
 }
 

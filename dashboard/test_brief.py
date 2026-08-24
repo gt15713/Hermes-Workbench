@@ -1,73 +1,54 @@
 # -*- coding: utf-8 -*-
-"""P0-1（B4）：/brief 端点测试（schema / 缓存 / degraded 降级）。
-
-生成通道 subprocess `hermes -z` 用 monkeypatch 替换（测试不真实调用 Hermes）。
-"""
-
-import json
+"""Today briefing must be deterministic and evidence-backed."""
 
 import plugin_api
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
-
-_app = FastAPI()
-_app.include_router(plugin_api.router)
-client = TestClient(_app)
 
 
-class _FakeResult:
-    def __init__(self, out: str):
-        self.stdout = out
-        self.stderr = ""
+def _board(*tasks):
+    return {"today": "2026-08-24", "sections": [{"key": "task", "files": list(tasks)}]}
 
 
-def test_brief_schema_and_type_filter(monkeypatch):
-    def fake_run(cmd, **kwargs):
-        cards = [
-            {"type": "new_task", "title": "采购", "reason": "会话提及", "action": "ingest"},
-            {"type": "duplicate", "title": "重复", "reason": "与X相同", "action": "view"},
-            {"type": "blocked", "title": "阻塞", "reason": "等审批", "action": "view"},
-            {"type": "overdue", "title": "超期", "reason": "5天", "action": "reassess"},
-            {"type": "decision", "title": "决策", "reason": "需拍板", "action": "view"},
-            {"type": "bad_type", "title": "非法类型", "reason": "应过滤", "action": "x"},
-        ]
-        return _FakeResult(json.dumps(cards, ensure_ascii=False))
-
-    monkeypatch.setattr("subprocess.run", fake_run)
+def test_brief_explains_each_rule(monkeypatch):
+    monkeypatch.setattr(plugin_api, "board", lambda: _board(
+        {"title": "旧任务", "status": "todo", "due": "2026-08-20"},
+        {"title": "执行中", "status": "in_progress", "execution_result": "pending"},
+        {"title": "已成功", "status": "done", "execution_result": "success"},
+    ))
     plugin_api._BRIEF_CACHE = {"ts": 0.0, "payload": None}
-    r = client.post("/brief")
-    assert r.status_code == 200
-    data = r.json()
-    assert data["ok"] is True
+    data = plugin_api.brief()
+    assert data["schema_version"] == 2
     assert data["degraded"] is False
-    assert len(data["cards"]) == 5  # 非法类型被过滤，≤5
-    for c in data["cards"]:
-        assert c["type"] in ("new_task", "duplicate", "blocked", "overdue", "decision")
+    assert {c["rule"] for c in data["cards"]} == {
+        "due_before_today", "in_progress_without_terminal_result", "completed_task_still_active"
+    }
+    assert all(c["evidence"] for c in data["cards"])
+
+
+def test_brief_does_not_invent_advice_without_evidence(monkeypatch):
+    monkeypatch.setattr(plugin_api, "board", lambda: _board(
+        {"title": "正常待办", "status": "todo", "due": "2026-08-25"}
+    ))
+    plugin_api._BRIEF_CACHE = {"ts": 0.0, "payload": None}
+    assert plugin_api.brief()["cards"] == []
 
 
 def test_brief_cache_hits(monkeypatch):
     calls = {"n": 0}
-
-    def fake_run(cmd, **kwargs):
+    def fake_board():
         calls["n"] += 1
-        return _FakeResult(json.dumps([{"type": "decision", "title": "D", "reason": "r", "action": "view"}]))
-
-    monkeypatch.setattr("subprocess.run", fake_run)
+        return _board()
+    monkeypatch.setattr(plugin_api, "board", fake_board)
     plugin_api._BRIEF_CACHE = {"ts": 0.0, "payload": None}
-    client.post("/brief")
-    client.post("/brief")
-    client.post("/brief")
-    assert calls["n"] == 1  # 缓存命中，只生成一次
+    plugin_api.brief()
+    plugin_api.brief()
+    assert calls["n"] == 1
 
 
-def test_brief_degraded_on_failure(monkeypatch):
-    def boom(cmd, **kwargs):
-        raise RuntimeError("hermes unavailable")
-
-    monkeypatch.setattr("subprocess.run", boom)
+def test_brief_degraded_on_board_failure(monkeypatch):
+    def boom():
+        raise RuntimeError("board unavailable")
+    monkeypatch.setattr(plugin_api, "board", boom)
     plugin_api._BRIEF_CACHE = {"ts": 0.0, "payload": None}
-    r = client.post("/brief")
-    data = r.json()
-    assert data["ok"] is True
+    data = plugin_api.brief()
     assert data["degraded"] is True
     assert data["cards"] == []

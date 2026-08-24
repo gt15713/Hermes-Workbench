@@ -410,6 +410,18 @@ class TestDeferEndpoint:
 
 
 class TestBoardHonesty:
+    def test_empty_aggregation_file_is_not_returned_as_table_row(self, wb):
+        """空聚合文件可留作审计，但不可进入任何视图的卡片集合。"""
+        empty = wb / "待回看" / "2026-08-24.md"
+        _write(empty, "---\ntype: queued\nstatus: pending\n---\n")
+
+        r = api.board()
+        video = next(section for section in r["sections"] if section["key"] == "video")
+
+        assert empty.exists()
+        assert all(row["file"] != empty.name for row in video["files"])
+        assert r["totals"]["pending"] == 0
+
     def test_entry_level_counting(self, wb):
         """R4 阶段 3：聚合文件 N 条 = N 计入 pending（而非按文件 1）。"""
         agg = wb / "待验证" / "2026-08-09.md"

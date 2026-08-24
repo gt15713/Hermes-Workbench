@@ -246,6 +246,9 @@ def board() -> dict:
                 # 空壳文件（全条目已处理，只剩 frontmatter）按 0 计，不虚增 pending/total
                 item_count = n_entries
                 info["entry_count"] = n_entries
+                # 所有视图共享 section.files；空聚合文件留在磁盘作审计，但不返回幽灵卡片/表格行。
+                if item_count == 0:
+                    continue
             if status in ("pending", "todo") and key != "trash":
                 totals["pending"] += item_count
             totals["total"] += item_count
@@ -457,16 +460,7 @@ _BRIEF_CACHE: dict = {"ts": 0.0, "payload": None}
 
 @router.post("/brief")
 def brief() -> dict:
-    """P0-1（B4）：Agent Briefing——惰性生成今日建议卡（≤5 张，5 类）。
-
-    - 缓存：后端内存 BRIEF_CACHE_MINUTES（默认 30）命中直接返回；前端会话缓存叠加
-    - 生成通道：subprocess `hermes -z <prompt>`（headless prompt；进程隔离不干扰主 Agent；
-      复用 Hermes 配置/fallback/成本记账；零新依赖）
-    - 失败/超时/解析失败 → degraded=true（前端规则型降级 + 「Agent 简报暂不可用」）
-    - 不落盘、不写 Workbench（只读 board 数据 + 内存建议）
-    """
-    import json
-    import subprocess
+    """生成可解释的规则建议；模型不再充当事实来源。"""
     import time as _time
 
     now = _time.time()
@@ -474,51 +468,43 @@ def brief() -> dict:
     if _BRIEF_CACHE["payload"] and now - _BRIEF_CACHE["ts"] < cache_min * 60:
         return _BRIEF_CACHE["payload"]
 
-    # 输入构造：board 精简视图（任务区 in_progress/超期/todo + 各分区计数）
     try:
-        board_data = board()  # 复用 /board 读路径（含懒同步）
-        tasks = []
-        for section in board_data.get("sections", []):
-            for card in section.get("files", []):
-                if section["key"] == "task" and card.get("status") in ("todo", "in_progress"):
-                    tasks.append(f"- [{card.get('status')}] {card.get('title')} (due={card.get('due') or '无'})")
-        summary_lines = []
-        for section in board_data.get("sections", []):
-            n = len(section.get("files", []))
-            if n:
-                summary_lines.append(f"{section['key']}: {n} 条")
-        summary = "；".join(summary_lines)
-        tasks_text = "\n".join(tasks[:40]) or "（无活跃任务）"
-        prompt = (
-            "你是 Hermes Workbench 的每日简报助手。基于以下工作台数据生成今日建议，"
-            "最多 5 条。类别仅限：new_task（建议新任务）/duplicate（可能重复）/blocked（被阻塞）/overdue（超期需重估）/decision（需要用户决策）。"
-            "只输出一个 JSON 数组，每条：{\"type\":\"...\",\"title\":\"...\",\"reason\":\"...\",\"action\":\"...\"}。"
-            "不要输出 JSON 之外任何文字。\n\n"
-            f"工作台概况：{summary}\n活跃任务：\n{tasks_text}\n"
-        )
-        # 会话列表隔离：oneshot 标记 source=tool（CLI 约定：tool 来源不出现在用户会话列表）
-        _brief_env = {**os.environ, "HERMES_SESSION_SOURCE": "tool"}
-        r = subprocess.run(
-            ["hermes", "-z", prompt],
-            capture_output=True,
-            text=True,
-            timeout=120,
-            encoding="utf-8",
-            errors="replace",
-            env=_brief_env,
-        )
-        out = (r.stdout or "").strip()
-        m = re.search(r"\[.*\]", out, re.S)
-        if not m:
-            raise ValueError("no json array in output")
-        cards = json.loads(m.group(0))
-        if not isinstance(cards, list):
-            raise ValueError("not a list")
-        cards = [c for c in cards if isinstance(c, dict) and c.get("type") in (
-            "new_task", "duplicate", "blocked", "overdue", "decision"
-        )][:5]
+        board_data = board()
+        today = board_data.get("today") or datetime.now().strftime("%Y-%m-%d")
+        task_section = next((s for s in board_data.get("sections", []) if s.get("key") == "task"), {})
+        tasks = task_section.get("files", [])
+        cards = []
+        for task in tasks:
+            status = str(task.get("status") or "")
+            title = str(task.get("title") or task.get("file") or "未命名任务")
+            due = str(task.get("due") or "")
+            result = str(task.get("execution_result") or "")
+            if status in {"done", "completed"} and result == "success":
+                cards.append({
+                    "type": "decision", "title": f"归档已完成任务：{title}",
+                    "reason": "任务已成功结束但仍位于任务区。", "action": "archive",
+                    "rule": "completed_task_still_active",
+                    "evidence": [f"任务：{title}", f"状态：{status}", "执行结果：success"],
+                })
+            elif status == "todo" and due and due < today:
+                cards.append({
+                    "type": "overdue", "title": f"重估超期任务：{title}",
+                    "reason": f"截止日期 {due} 早于今天 {today}。", "action": "reassess",
+                    "rule": "due_before_today",
+                    "evidence": [f"任务：{title}", f"截止日期：{due}", f"今天：{today}"],
+                })
+            elif status == "in_progress":
+                cards.append({
+                    "type": "blocked", "title": f"确认进行中任务：{title}",
+                    "reason": "任务仍为进行中，尚未记录成功或失败终态。", "action": "view",
+                    "rule": "in_progress_without_terminal_result",
+                    "evidence": [f"任务：{title}", "状态：in_progress", f"执行结果：{result or '未记录'}"],
+                })
+            if len(cards) >= 5:
+                break
         payload = {
             "ok": True,
+            "schema_version": 2,
             "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "cards": cards,
             "degraded": False,
@@ -900,9 +886,12 @@ async def complete(body: dict) -> dict:
             # 兼容旧会话监测器或外部 Agent 已直接写成 completed 的任务。
             # 仍在任务区时必须由此唯一正式入口补齐记录并移动归档。
             frontmatter = _extract_frontmatter(text)[0] or {}
-            if frontmatter.get("status") != "completed":
+            if str(frontmatter.get("status") or "").strip().lower() == "done" and execution_result == "success":
+                new_text = _replace_frontmatter_status(text, "done", "completed")
+            elif frontmatter.get("status") != "completed":
                 return {"ok": False, "error": "already completed or no todo status"}
-            new_text = text
+            else:
+                new_text = text
         today = _date.today().strftime("%Y-%m-%d")
         new_text = _ensure_completed_at(new_text, today)
         new_text = _ensure_schema_version(new_text)

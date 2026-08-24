@@ -67,16 +67,18 @@ export function WbPreviewDrawer({
 }) {
   const [tab, setTab] = useState<'preview' | 'history'>('preview')
 
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: FILE_KEY(card.dir, card.file),
     queryFn: () => fetchFile(card.dir, card.file),
     enabled: true,
+    retry: 1,
   })
 
-  const { data: events, isLoading: evLoading } = useQuery({
+  const { data: events, isLoading: evLoading, error: evError, refetch: refetchEvents } = useQuery({
     queryKey: RECENT_EVENTS_KEY(card.dir, card.file),
     queryFn: () => fetchRecentEvents(card.dir, card.file),
     enabled: tab === 'history',
+    retry: 1,
   })
 
   const tabBtn = (active: boolean) =>
@@ -133,7 +135,10 @@ export function WbPreviewDrawer({
               <div className="flex h-full items-center justify-center text-(--ui-text-tertiary)">加载中…</div>
             )}
             {error && (
-              <div className="flex h-full items-center justify-center text-(--ui-text-danger)">加载失败</div>
+              <div className="flex h-full flex-col items-center justify-center gap-2 text-(--ui-text-danger)">
+                <span>{String((error as Error).message || '加载失败')}</span>
+                <Button size="sm" variant="secondary" onClick={() => void refetch()}>重试</Button>
+              </div>
             )}
             {data && <PreviewBody content={data.content || '（空）'} focusTitle={card.entry_title || null} />}
           </div>
@@ -142,12 +147,18 @@ export function WbPreviewDrawer({
             {evLoading && (
               <div className="flex h-full items-center justify-center text-(--ui-text-tertiary)">加载中…</div>
             )}
-            {!evLoading && (!events || events.entries.length === 0) && (
+            {evError && (
+              <div className="flex h-full flex-col items-center justify-center gap-2 text-(--ui-text-danger)">
+                <span>{String((evError as Error).message || '运行历史加载失败')}</span>
+                <Button size="sm" variant="secondary" onClick={() => void refetchEvents()}>重试</Button>
+              </div>
+            )}
+            {!evLoading && !evError && (!events || events.entries.length === 0) && (
               <div className="flex h-full items-center justify-center text-(--ui-text-quaternary)">
                 暂无运行历史
               </div>
             )}
-            {!evLoading && events && events.entries.length > 0 && (
+            {!evLoading && !evError && events && events.entries.length > 0 && (
               <ul className="flex flex-col gap-1">
                 {events.entries.map((e) => (
                   <li

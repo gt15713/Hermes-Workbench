@@ -1197,6 +1197,12 @@ function BriefCardView({ card, onAccept, onIgnore }: { card: WbBriefCard; onAcce
       <div className="min-w-0 flex-1">
         <div className="text-[0.8125rem] font-semibold text-(--ui-text-primary)">{card.title}</div>
         <div className="mt-0.5 text-[0.75rem] text-(--ui-text-tertiary)">{card.reason}</div>
+        <details className="mt-1 text-[0.75rem] text-(--ui-text-quaternary)">
+          <summary className="cursor-pointer">查看依据</summary>
+          <ul className="mt-1 list-disc pl-4">
+            {card.evidence.map(item => <li key={item}>{item}</li>)}
+          </ul>
+        </details>
         <div className="mt-1 flex items-center gap-1">
           {onAccept && (
             <button
@@ -1217,7 +1223,7 @@ function BriefCardView({ card, onAccept, onIgnore }: { card: WbBriefCard; onAcce
         </div>
       </div>
       <span className="shrink-0 rounded bg-(--ui-bg-quinary) px-1 py-0.5 text-[0.75rem] text-(--ui-text-quaternary)">
-        Agent 建议
+        规则建议
       </span>
     </div>
   )

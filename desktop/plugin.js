@@ -24,6 +24,25 @@ import {
 
 // desktop-src/api.ts
 import { atom, queryClient } from "@hermes/plugin-sdk";
+
+// desktop-src/request.ts
+function withTimeout(promise, timeoutMs, label = "请求") {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label}超时，请重试`)), timeoutMs);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      }
+    );
+  });
+}
+
+// desktop-src/api.ts
 var rest = null;
 var $collapsedSections = atom({});
 var $filterText = atom("");
@@ -71,9 +90,17 @@ var BOARD_KEY = ["workbench", "board"];
 var FILE_KEY = (dir, file) => ["workbench", "file", dir, file];
 var RECENT_EVENTS_KEY = (dir, file) => ["workbench", "events", dir, file];
 var fetchBoard = () => call("/board");
-var fetchFile = (dir, file) => call(`/file?dirname=${encodeURIComponent(dir)}&filename=${encodeURIComponent(file)}`);
-var fetchRecentEvents = (dir, file) => call(
-  `/recent?limit=50&dir=${encodeURIComponent(dir)}&file=${encodeURIComponent(file)}`
+var fetchFile = (dir, file) => withTimeout(
+  call(`/file?dirname=${encodeURIComponent(dir)}&filename=${encodeURIComponent(file)}`),
+  15e3,
+  "任务详情加载"
+);
+var fetchRecentEvents = (dir, file) => withTimeout(
+  call(
+    `/recent?limit=50&dir=${encodeURIComponent(dir)}&file=${encodeURIComponent(file)}`
+  ),
+  15e3,
+  "运行历史加载"
 );
 var fetchSearch = (q, tag = "") => call(
   `/search?limit=20&q=${encodeURIComponent(q)}${tag ? `&tag=${encodeURIComponent(tag)}` : ""}`
@@ -212,6 +239,7 @@ var isOverdue = (due) => {
 function canArchiveTask(sectionKey, status, executionResult) {
   if (sectionKey !== "task") return false;
   if (status === "todo" || status === "completed") return true;
+  if (status === "done") return executionResult === "success";
   return status === "in_progress" && executionResult === "success";
 }
 function errorMessage(error) {
@@ -390,15 +418,17 @@ function WbPreviewDrawer({
   onClose
 }) {
   const [tab, setTab] = useState("preview");
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: FILE_KEY(card.dir, card.file),
     queryFn: () => fetchFile(card.dir, card.file),
-    enabled: true
+    enabled: true,
+    retry: 1
   });
-  const { data: events, isLoading: evLoading } = useQuery({
+  const { data: events, isLoading: evLoading, error: evError, refetch: refetchEvents } = useQuery({
     queryKey: RECENT_EVENTS_KEY(card.dir, card.file),
     queryFn: () => fetchRecentEvents(card.dir, card.file),
-    enabled: tab === "history"
+    enabled: tab === "history",
+    retry: 1
   });
   const tabBtn = (active) => cn(
     "cursor-pointer rounded px-2 py-1 text-[0.8125rem] transition-colors",
@@ -440,12 +470,19 @@ function WbPreviewDrawer({
             ] }),
             tab === "preview" ? /* @__PURE__ */ jsxs("div", { className: "flex-1 overflow-y-auto whitespace-pre-wrap text-[0.75rem] leading-relaxed", children: [
               isLoading && /* @__PURE__ */ jsx("div", { className: "flex h-full items-center justify-center text-(--ui-text-tertiary)", children: "加载中…" }),
-              error && /* @__PURE__ */ jsx("div", { className: "flex h-full items-center justify-center text-(--ui-text-danger)", children: "加载失败" }),
+              error && /* @__PURE__ */ jsxs("div", { className: "flex h-full flex-col items-center justify-center gap-2 text-(--ui-text-danger)", children: [
+                /* @__PURE__ */ jsx("span", { children: String(error.message || "加载失败") }),
+                /* @__PURE__ */ jsx(Button, { size: "sm", variant: "secondary", onClick: () => void refetch(), children: "重试" })
+              ] }),
               data && /* @__PURE__ */ jsx(PreviewBody, { content: data.content || "（空）", focusTitle: card.entry_title || null })
             ] }) : /* @__PURE__ */ jsxs("div", { className: "flex-1 overflow-y-auto text-[0.8125rem]", children: [
               evLoading && /* @__PURE__ */ jsx("div", { className: "flex h-full items-center justify-center text-(--ui-text-tertiary)", children: "加载中…" }),
-              !evLoading && (!events || events.entries.length === 0) && /* @__PURE__ */ jsx("div", { className: "flex h-full items-center justify-center text-(--ui-text-quaternary)", children: "暂无运行历史" }),
-              !evLoading && events && events.entries.length > 0 && /* @__PURE__ */ jsx("ul", { className: "flex flex-col gap-1", children: events.entries.map((e) => /* @__PURE__ */ jsxs(
+              evError && /* @__PURE__ */ jsxs("div", { className: "flex h-full flex-col items-center justify-center gap-2 text-(--ui-text-danger)", children: [
+                /* @__PURE__ */ jsx("span", { children: String(evError.message || "运行历史加载失败") }),
+                /* @__PURE__ */ jsx(Button, { size: "sm", variant: "secondary", onClick: () => void refetchEvents(), children: "重试" })
+              ] }),
+              !evLoading && !evError && (!events || events.entries.length === 0) && /* @__PURE__ */ jsx("div", { className: "flex h-full items-center justify-center text-(--ui-text-quaternary)", children: "暂无运行历史" }),
+              !evLoading && !evError && events && events.entries.length > 0 && /* @__PURE__ */ jsx("ul", { className: "flex flex-col gap-1", children: events.entries.map((e) => /* @__PURE__ */ jsxs(
                 "li",
                 {
                   className: "flex items-center gap-2 rounded border border-(--ui-stroke-tertiary) px-2 py-1.5",
@@ -1651,6 +1688,10 @@ function BriefCardView({ card, onAccept, onIgnore }) {
     /* @__PURE__ */ jsxs3("div", { className: "min-w-0 flex-1", children: [
       /* @__PURE__ */ jsx3("div", { className: "text-[0.8125rem] font-semibold text-(--ui-text-primary)", children: card.title }),
       /* @__PURE__ */ jsx3("div", { className: "mt-0.5 text-[0.75rem] text-(--ui-text-tertiary)", children: card.reason }),
+      /* @__PURE__ */ jsxs3("details", { className: "mt-1 text-[0.75rem] text-(--ui-text-quaternary)", children: [
+        /* @__PURE__ */ jsx3("summary", { className: "cursor-pointer", children: "查看依据" }),
+        /* @__PURE__ */ jsx3("ul", { className: "mt-1 list-disc pl-4", children: card.evidence.map((item) => /* @__PURE__ */ jsx3("li", { children: item }, item)) })
+      ] }),
       /* @__PURE__ */ jsxs3("div", { className: "mt-1 flex items-center gap-1", children: [
         onAccept && /* @__PURE__ */ jsx3(
           "button",
@@ -1672,7 +1713,7 @@ function BriefCardView({ card, onAccept, onIgnore }) {
         )
       ] })
     ] }),
-    /* @__PURE__ */ jsx3("span", { className: "shrink-0 rounded bg-(--ui-bg-quinary) px-1 py-0.5 text-[0.75rem] text-(--ui-text-quaternary)", children: "Agent 建议" })
+    /* @__PURE__ */ jsx3("span", { className: "shrink-0 rounded bg-(--ui-bg-quinary) px-1 py-0.5 text-[0.75rem] text-(--ui-text-quaternary)", children: "规则建议" })
   ] });
 }
 function TodayView({ board, onPreview, onGoBoard }) {
