@@ -1356,6 +1356,23 @@ export function WorkbenchBoardPage() {
   // 2026-08-22：设置浮窗（路径/分区/定时/保留/投递）
   const [showSettings, setShowSettings] = useState(false)
   const [showHealthDetails, setShowHealthDetails] = useState(false)
+  // 健康详情与卡片菜单保持同一交互契约：点击组件外部或按 Escape 即收起。
+  useEffect(() => {
+    if (!showHealthDetails) return
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.target instanceof Element && event.target.closest('[data-wb-health]')) return
+      setShowHealthDetails(false)
+    }
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setShowHealthDetails(false)
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [showHealthDetails])
   // P0-3：链路健康 + 投递配置 + 到期筛选（hooks 无条件在顶部）
   const health = useQuery({ queryKey: ['workbench', 'health'], queryFn: fetchHealth, refetchInterval: 30_000 })
   const settings = useQuery({ queryKey: ['workbench', 'settings'], queryFn: fetchSettings })
@@ -1636,7 +1653,7 @@ export function WorkbenchBoardPage() {
             ))}
           </div>
           {/* P0-3：链路健康条 */}
-          <div className="relative">
+          <div className="relative" data-wb-health>
             <button
               type="button"
               className="flex items-center gap-1 rounded px-1.5 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary)"
@@ -1649,7 +1666,7 @@ export function WorkbenchBoardPage() {
               <Codicon name={showHealthDetails ? 'chevron-up' : 'chevron-down'} size="0.65rem" />
             </button>
             {showHealthDetails && healthData && (
-              <div className="absolute right-0 top-full z-30 mt-1 w-72 rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-primary) p-2 shadow-xl">
+              <div className="wb-health-popover absolute right-0 top-full z-30 mt-1 w-72 rounded-md p-2 text-(--ui-text-primary)">
                 <div className="mb-1.5 flex items-center justify-between text-[0.75rem] font-semibold text-(--ui-text-primary)">
                   <span>链路健康详情</span>
                   <span className="font-normal text-(--ui-text-quaternary)">{healthData.ts}</span>

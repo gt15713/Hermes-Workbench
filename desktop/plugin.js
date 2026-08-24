@@ -6,7 +6,7 @@ if (!node) {
   node.id = id;
   document.head.appendChild(node);
 }
-node.textContent = "/* Workbench plugin styles */\n.wb-root {\n  font-size: 0.875rem;\n  line-height: 1.55;\n}\n\n.wb-column {\n  scrollbar-width: thin;\n}\n\n.wb-card {\n  transition: border-color 0.15s ease, box-shadow 0.15s ease;\n}\n\n/* 2026-08-22 等宽看板（已拍板）：展开列固定 16rem。\n   宿主 Tailwind 不含 w-[16rem]/min-w-[14rem]/max-w-[18rem] 等任意值规则\n   （已核验 dist CSS 无此类），此前列宽实为内容自适应 → 待验证区内容多被撑宽。\n   宽度写在本文件（构建时内联注入，100% 生效），不依赖宿主工具类。 */\n.wb-section {\n  width: 16rem;\n  min-width: 16rem;\n  max-width: 16rem;\n}\n\n/* 2026-08-22 弹窗尺寸修复：宿主 Tailwind 无 w-[min(52rem,94vw)] 规则\n   （已核验 dist CSS），此前弹窗落回 SDK 默认 max-w-lg(32rem) 小窗。\n   宽度写在本文件，构建时内联注入，100% 生效。 */\n.wb-dialog {\n  width: min(52rem, 94vw);\n  max-width: 94vw;\n}\n\n/* Compact rails keep inactive partitions visible without competing with the\n   Bots sidebar or the right-docked Cronjobs pane. */\n.wb-section--collapsed {\n  min-width: 2rem;\n  max-width: 2rem;\n  background-color: color-mix(in srgb, var(--ui-bg-quinary) 78%, var(--ui-bg));\n  border: 1px solid color-mix(in srgb, var(--ui-stroke-secondary) 82%, transparent);\n  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ui-bg) 18%, transparent);\n}\n\n/* Action menus are viewport overlays; the explicit z-index also clears the\n   Cronjobs pane's right-docked surface. */\n.wb-menu-overlay {\n  position: fixed;\n  z-index: 10020;\n}\n\n/* Pending badge pulse */\n@keyframes wb-pulse {\n  0%, 100% { opacity: 1; }\n  50% { opacity: 0.5; }\n}\n\n.wb-pending-badge {\n  animation: wb-pulse 2s ease-in-out infinite;\n}\n";
+node.textContent = "/* Workbench plugin styles */\n.wb-root {\n  font-size: 0.875rem;\n  line-height: 1.55;\n}\n\n.wb-column {\n  scrollbar-width: thin;\n}\n\n.wb-card {\n  transition: border-color 0.15s ease, box-shadow 0.15s ease;\n}\n\n/* 2026-08-22 等宽看板（已拍板）：展开列固定 16rem。\n   宿主 Tailwind 不含 w-[16rem]/min-w-[14rem]/max-w-[18rem] 等任意值规则\n   （已核验 dist CSS 无此类），此前列宽实为内容自适应 → 待验证区内容多被撑宽。\n   宽度写在本文件（构建时内联注入，100% 生效），不依赖宿主工具类。 */\n.wb-section {\n  width: 16rem;\n  min-width: 16rem;\n  max-width: 16rem;\n}\n\n/* 2026-08-22 弹窗尺寸修复：宿主 Tailwind 无 w-[min(52rem,94vw)] 规则\n   （已核验 dist CSS），此前弹窗落回 SDK 默认 max-w-lg(32rem) 小窗。\n   宽度写在本文件，构建时内联注入，100% 生效。 */\n.wb-dialog {\n  width: min(52rem, 94vw);\n  max-width: 94vw;\n}\n\n/* Compact rails keep inactive partitions visible without competing with the\n   Bots sidebar or the right-docked Cronjobs pane. */\n.wb-section--collapsed {\n  min-width: 2rem;\n  max-width: 2rem;\n  background-color: color-mix(in srgb, var(--ui-bg-quinary) 78%, var(--ui-bg));\n  border: 1px solid color-mix(in srgb, var(--ui-stroke-secondary) 82%, transparent);\n  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ui-bg) 18%, transparent);\n}\n\n/* Action menus are viewport overlays; the explicit z-index also clears the\n   Cronjobs pane's right-docked surface. */\n.wb-menu-overlay {\n  position: fixed;\n  z-index: 10020;\n}\n\n/* Health details use the same opaque elevated surface as Workbench cards and\n   menus. Explicit plugin-owned styles avoid unsupported host utility tokens\n   such as bg-(--ui-bg-primary), which previously fell through to transparency. */\n.wb-health-popover {\n  background-color: var(--ui-bg-elevated);\n  border: 1px solid var(--ui-stroke-secondary);\n  box-shadow: 0 12px 32px color-mix(in srgb, var(--ui-bg) 68%, transparent);\n  backdrop-filter: none;\n  opacity: 1;\n}\n\n/* Pending badge pulse */\n@keyframes wb-pulse {\n  0%, 100% { opacity: 1; }\n  50% { opacity: 0.5; }\n}\n\n.wb-pending-badge {\n  animation: wb-pulse 2s ease-in-out infinite;\n}\n";
 
 // desktop-src/plugin.tsx
 import {
@@ -1816,6 +1816,22 @@ function WorkbenchBoardPage() {
   const [showNewTask, setShowNewTask] = useState2(false);
   const [showSettings, setShowSettings] = useState2(false);
   const [showHealthDetails, setShowHealthDetails] = useState2(false);
+  useEffect(() => {
+    if (!showHealthDetails) return;
+    const onPointerDown = (event) => {
+      if (event.target instanceof Element && event.target.closest("[data-wb-health]")) return;
+      setShowHealthDetails(false);
+    };
+    const onKeyDown = (event) => {
+      if (event.key === "Escape") setShowHealthDetails(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [showHealthDetails]);
   const health = useQuery2({ queryKey: ["workbench", "health"], queryFn: fetchHealth, refetchInterval: 3e4 });
   const settings = useQuery2({ queryKey: ["workbench", "settings"], queryFn: fetchSettings });
   const dueFilter = useValue2($dueFilter);
@@ -2086,7 +2102,7 @@ function WorkbenchBoardPage() {
           },
           key
         )) }),
-        /* @__PURE__ */ jsxs3("div", { className: "relative", children: [
+        /* @__PURE__ */ jsxs3("div", { className: "relative", "data-wb-health": true, children: [
           /* @__PURE__ */ jsxs3(
             "button",
             {
@@ -2102,7 +2118,7 @@ function WorkbenchBoardPage() {
               ]
             }
           ),
-          showHealthDetails && healthData && /* @__PURE__ */ jsxs3("div", { className: "absolute right-0 top-full z-30 mt-1 w-72 rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-primary) p-2 shadow-xl", children: [
+          showHealthDetails && healthData && /* @__PURE__ */ jsxs3("div", { className: "wb-health-popover absolute right-0 top-full z-30 mt-1 w-72 rounded-md p-2 text-(--ui-text-primary)", children: [
             /* @__PURE__ */ jsxs3("div", { className: "mb-1.5 flex items-center justify-between text-[0.75rem] font-semibold text-(--ui-text-primary)", children: [
               /* @__PURE__ */ jsx3("span", { children: "链路健康详情" }),
               /* @__PURE__ */ jsx3("span", { className: "font-normal text-(--ui-text-quaternary)", children: healthData.ts })

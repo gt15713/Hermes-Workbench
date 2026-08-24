@@ -47,6 +47,17 @@
   z-index: 10020;
 }
 
+/* Health details use the same opaque elevated surface as Workbench cards and
+   menus. Explicit plugin-owned styles avoid unsupported host utility tokens
+   such as bg-(--ui-bg-primary), which previously fell through to transparency. */
+.wb-health-popover {
+  background-color: var(--ui-bg-elevated);
+  border: 1px solid var(--ui-stroke-secondary);
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--ui-bg) 68%, transparent);
+  backdrop-filter: none;
+  opacity: 1;
+}
+
 /* Pending badge pulse */
 @keyframes wb-pulse {
   0%, 100% { opacity: 1; }

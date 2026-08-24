@@ -60,6 +60,15 @@ test('card action menu is an overlay that can clear the Cronjobs pane', () => {
   assert.match(css, /\.wb-menu-overlay/)
 })
 
+test('health popover follows Workbench theming and closes on outside pointerdown', () => {
+  assert.match(board, /data-wb-health/)
+  assert.match(board, /closest\('\[data-wb-health\]'\)/)
+  assert.match(board, /setShowHealthDetails\(false\)/)
+  assert.match(css, /\.wb-health-popover\s*\{[\s\S]*?background-color:\s*var\(--ui-bg-elevated\)/)
+  assert.match(css, /\.wb-health-popover\s*\{[\s\S]*?border:/)
+  assert.doesNotMatch(board, /bg-\(--ui-bg-primary\).*链路健康详情/)
+})
+
 test('Hermes session composer contract remains stable', { skip: !hermesStyles }, () => {
   assert.match(hermesStyles, /--composer-width:\s*100%/)
   assert.match(hermesStyles, /--chat-min-width:\s*28rem/)
