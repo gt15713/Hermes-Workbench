@@ -1085,7 +1085,7 @@ class TestEventsHealth:
         dashboard_dir = plugin_root / "dashboard"
         dashboard_dir.mkdir(parents=True)
         monkeypatch.setattr(api, "_DASHBOARD_DIR", str(dashboard_dir))
-        monkeypatch.setattr(api, "get_vault", lambda: "D:/Obsidian")
+        monkeypatch.setattr(api, "get_vault", lambda: "X:/ExampleVault")
         monkeypatch.setattr(api, "_get_qq_health", self._healthy_qq)
         (plugin_root / "scheduler.lock").write_text(
             '{"heartbeat_at":"2999-01-01T00:00:00"}', encoding="utf-8"
@@ -1115,7 +1115,7 @@ class TestEventsHealth:
         dashboard_dir = plugin_root / "dashboard"
         dashboard_dir.mkdir(parents=True)
         monkeypatch.setattr(api, "_DASHBOARD_DIR", str(dashboard_dir))
-        monkeypatch.setattr(api, "get_vault", lambda: "D:/Obsidian")
+        monkeypatch.setattr(api, "get_vault", lambda: "X:/ExampleVault")
         monkeypatch.setattr(api, "_get_qq_health", self._healthy_qq)
         (plugin_root / "scheduler.lock").write_text(
             '{"heartbeat_at":"2999-01-01T00:00:00"}', encoding="utf-8"
@@ -1136,7 +1136,7 @@ class TestEventsHealth:
         dashboard_dir = plugin_root / "dashboard"
         dashboard_dir.mkdir(parents=True)
         monkeypatch.setattr(api, "_DASHBOARD_DIR", str(dashboard_dir))
-        monkeypatch.setattr(api, "get_vault", lambda: "D:/Obsidian")
+        monkeypatch.setattr(api, "get_vault", lambda: "X:/ExampleVault")
         monkeypatch.setattr(api, "_get_qq_health", self._healthy_qq)
         (plugin_root / "scheduler-state.json").write_text(
             '{"pending_delivery":null,"errors":{"count":0,"last":null}}',
@@ -1154,7 +1154,7 @@ class TestEventsHealth:
         dashboard_dir = plugin_root / "dashboard"
         dashboard_dir.mkdir(parents=True)
         monkeypatch.setattr(api, "_DASHBOARD_DIR", str(dashboard_dir))
-        monkeypatch.setattr(api, "get_vault", lambda: "D:/Obsidian")
+        monkeypatch.setattr(api, "get_vault", lambda: "X:/ExampleVault")
         (plugin_root / "scheduler.lock").write_text(
             '{"heartbeat_at":"2999-01-01T00:00:00"}', encoding="utf-8"
         )

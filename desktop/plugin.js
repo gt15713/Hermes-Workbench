@@ -24,25 +24,6 @@ import {
 
 // desktop-src/api.ts
 import { atom, queryClient } from "@hermes/plugin-sdk";
-
-// desktop-src/request.ts
-function withTimeout(promise, timeoutMs, label = "请求") {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${label}超时，请重试`)), timeoutMs);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error) => {
-        clearTimeout(timer);
-        reject(error);
-      }
-    );
-  });
-}
-
-// desktop-src/api.ts
 var rest = null;
 var $collapsedSections = atom({});
 var $filterText = atom("");
@@ -90,17 +71,13 @@ var BOARD_KEY = ["workbench", "board"];
 var FILE_KEY = (dir, file) => ["workbench", "file", dir, file];
 var RECENT_EVENTS_KEY = (dir, file) => ["workbench", "events", dir, file];
 var fetchBoard = () => call("/board");
-var fetchFile = (dir, file) => withTimeout(
-  call(`/file?dirname=${encodeURIComponent(dir)}&filename=${encodeURIComponent(file)}`),
-  15e3,
-  "任务详情加载"
+var fetchFile = (dir, file) => call(
+  `/file?dirname=${encodeURIComponent(dir)}&filename=${encodeURIComponent(file)}`,
+  { timeoutMs: 15e3 }
 );
-var fetchRecentEvents = (dir, file) => withTimeout(
-  call(
-    `/recent?limit=50&dir=${encodeURIComponent(dir)}&file=${encodeURIComponent(file)}`
-  ),
-  15e3,
-  "运行历史加载"
+var fetchRecentEvents = (dir, file) => call(
+  `/recent?limit=50&dir=${encodeURIComponent(dir)}&file=${encodeURIComponent(file)}`,
+  { timeoutMs: 15e3 }
 );
 var fetchSearch = (q, tag = "") => call(
   `/search?limit=20&q=${encodeURIComponent(q)}${tag ? `&tag=${encodeURIComponent(tag)}` : ""}`
@@ -1781,8 +1758,8 @@ function TodayView({ board, onPreview, onGoBoard }) {
     ] }),
     /* @__PURE__ */ jsxs3("div", { className: "flex flex-col gap-1.5", children: [
       /* @__PURE__ */ jsxs3("div", { className: "flex items-center gap-1.5", children: [
-        /* @__PURE__ */ jsx3("span", { className: "text-[0.8125rem] font-semibold text-(--ui-text-secondary)", children: "✨ Agent 建议" }),
-        /* @__PURE__ */ jsx3("span", { className: "text-[0.75rem] text-(--ui-text-quaternary)", children: "仅供参考，可随时忽略" })
+        /* @__PURE__ */ jsx3("span", { className: "text-[0.8125rem] font-semibold text-(--ui-text-secondary)", children: "✨ 规则建议" }),
+        /* @__PURE__ */ jsx3("span", { className: "text-[0.75rem] text-(--ui-text-quaternary)", children: "依据任务状态、截止日期和最近结果生成" })
       ] }),
       brief?.degraded ? /* @__PURE__ */ jsx3("div", { className: "rounded-md border border-(--ui-stroke-tertiary) px-2.5 py-2 text-[0.75rem] text-(--ui-text-quaternary)", children: "Agent 简报暂不可用（Hermes 未响应）——规则区仍实时可用" }) : visibleCards.length === 0 ? /* @__PURE__ */ jsx3("div", { className: "px-1 text-[0.75rem] text-(--ui-text-quaternary)", children: "暂无建议" }) : visibleCards.map((c) => /* @__PURE__ */ jsx3(
         BriefCardView,

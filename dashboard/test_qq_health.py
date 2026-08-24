@@ -96,4 +96,7 @@ def test_disconnected_transport_is_red_even_when_old_messages_exist(tmp_path):
 
     assert result["status"] == "red"
     assert result["transport"] == {"status": "red", "detail": "QQ WebSocket 未连接"}
-    assert result["full_group"] == {"status": "green", "detail": "适配器已识别普通群消息事件"}
+    assert result["full_group"] == {
+        "status": "yellow",
+        "detail": "适配器声明支持普通群消息，但尚无事件级运行证据",
+    }

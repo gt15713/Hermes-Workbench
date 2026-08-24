@@ -94,10 +94,12 @@ def assess_qq_health(
     }
     c2c = _intake_result("私聊", c2c_seen, recent_hours)
     group = _intake_result("群聊", group_seen, recent_hours)
+    # Source compatibility is not operational evidence. Keep this yellow until
+    # the gateway emits event-specific intake telemetry for GROUP_MESSAGE_CREATE.
     full_group = {
-        "status": "green" if supports_full_group else "yellow",
+        "status": "yellow",
         "detail": (
-            "适配器已识别普通群消息事件"
+            "适配器声明支持普通群消息，但尚无事件级运行证据"
             if supports_full_group
             else "当前适配器仅确认群 @ 消息；普通群消息等待上游兼容"
         ),

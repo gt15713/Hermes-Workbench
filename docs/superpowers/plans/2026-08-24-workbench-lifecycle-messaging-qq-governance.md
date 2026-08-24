@@ -63,7 +63,7 @@
 ## Task 5: Stop Weixin reset banners safely
 
 **Files:**
-- Modify: `C:\Users\Kayura\AppData\Local\hermes\config.yaml` (supported user config only)
+- Modify: `<HERMES_HOME>\config.yaml` (supported user config only)
 - Verify only: installed Hermes `gateway/config.py`, `gateway/run.py`, `gateway/platforms/weixin.py`
 
 1. Preserve the existing reset schedule.
@@ -75,7 +75,7 @@
 ## Task 6: Audit QQ configuration and design the Workbench bot surface
 
 **Files:**
-- Verify only: `C:\Users\Kayura\AppData\Local\hermes\config.yaml`, `.env`, installed QQ adapter/onboarding code
+- Verify only: `<HERMES_HOME>\config.yaml`, `.env`, installed QQ adapter/onboarding code
 - Modify later only after explicit product approval: Workbench command module and tests
 
 1. Audit credentials by presence only; never print IDs, secrets, OpenIDs, or channel IDs.

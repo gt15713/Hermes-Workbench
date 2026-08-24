@@ -32,6 +32,21 @@ def test_brief_does_not_invent_advice_without_evidence(monkeypatch):
     assert plugin_api.brief()["cards"] == []
 
 
+def test_brief_routes_in_progress_terminal_results_truthfully(monkeypatch):
+    monkeypatch.setattr(plugin_api, "board", lambda: _board(
+        {"title": "执行成功", "status": "in_progress", "execution_result": "success"},
+        {"title": "执行失败", "status": "in_progress", "execution_result": "failure"},
+    ))
+    plugin_api._BRIEF_CACHE = {"ts": 0.0, "payload": None}
+
+    cards = plugin_api.brief()["cards"]
+
+    assert [c["rule"] for c in cards] == [
+        "completed_task_still_active", "failed_execution_needs_recovery"
+    ]
+    assert all(c["rule"] != "in_progress_without_terminal_result" for c in cards)
+
+
 def test_brief_cache_hits(monkeypatch):
     calls = {"n": 0}
     def fake_board():

@@ -1305,8 +1305,8 @@ function TodayView({ board, onPreview, onGoBoard }: {
         {/* 建议区 */}
         <div className="flex flex-col gap-1.5">
           <div className="flex items-center gap-1.5">
-            <span className="text-[0.8125rem] font-semibold text-(--ui-text-secondary)">✨ Agent 建议</span>
-            <span className="text-[0.75rem] text-(--ui-text-quaternary)">仅供参考，可随时忽略</span>
+            <span className="text-[0.8125rem] font-semibold text-(--ui-text-secondary)">✨ 规则建议</span>
+            <span className="text-[0.75rem] text-(--ui-text-quaternary)">依据任务状态、截止日期和最近结果生成</span>
           </div>
           {brief?.degraded ? (
             <div className="rounded-md border border-(--ui-stroke-tertiary) px-2.5 py-2 text-[0.75rem] text-(--ui-text-quaternary)">

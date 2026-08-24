@@ -479,12 +479,19 @@ def brief() -> dict:
             title = str(task.get("title") or task.get("file") or "未命名任务")
             due = str(task.get("due") or "")
             result = str(task.get("execution_result") or "")
-            if status in {"done", "completed"} and result == "success":
+            if result == "success" and status in {"in_progress", "done", "completed"}:
                 cards.append({
                     "type": "decision", "title": f"归档已完成任务：{title}",
                     "reason": "任务已成功结束但仍位于任务区。", "action": "archive",
                     "rule": "completed_task_still_active",
                     "evidence": [f"任务：{title}", f"状态：{status}", "执行结果：success"],
+                })
+            elif result == "failure" and status == "in_progress":
+                cards.append({
+                    "type": "decision", "title": f"处理失败任务：{title}",
+                    "reason": "任务已记录执行失败，需要恢复待办或查看失败原因。", "action": "view",
+                    "rule": "failed_execution_needs_recovery",
+                    "evidence": [f"任务：{title}", "状态：in_progress", "执行结果：failure"],
                 })
             elif status == "todo" and due and due < today:
                 cards.append({
@@ -493,7 +500,7 @@ def brief() -> dict:
                     "rule": "due_before_today",
                     "evidence": [f"任务：{title}", f"截止日期：{due}", f"今天：{today}"],
                 })
-            elif status == "in_progress":
+            elif status == "in_progress" and result in {"", "pending"}:
                 cards.append({
                     "type": "blocked", "title": f"确认进行中任务：{title}",
                     "reason": "任务仍为进行中，尚未记录成功或失败终态。", "action": "view",

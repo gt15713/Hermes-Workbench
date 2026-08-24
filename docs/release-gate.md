@@ -1,6 +1,6 @@
 # P0-E 发布闸门检查单（2026-08-23 定稿）
 
-> 放行判定 = 干净环境端到端通过 + grep 零命中 + 回归基线 332 全绿，不是文件清单勾满。
+> 放行判定 = 干净环境端到端通过 + 隐私门禁零命中 + 当前回归基线 371 全绿，不是文件清单勾满。
 
 ## ① 干净环境端到端（唯一硬判据）
 
@@ -20,9 +20,7 @@ git clone <repo> workbench-view
 ## ② 隐私 grep 闸门
 
 ```powershell
-rg -n "C:/Users|D:/Obsidian|Kayura|827B|个人工作台" . `
-  -g "!node_modules/**" -g "!*.bak*" -g "!workbench-config.json" `
-  -g "!workbench.db*" -g "!scheduler-*" -g "!desktop/build-info.json" -g "!.git/**"
+python scripts/workbench_privacy_gate.py
 ```
 
 期望：0 命中。`desktop/plugin.js` 必须包含在扫描内（它进仓库）。
@@ -31,11 +29,11 @@ rg -n "C:/Users|D:/Obsidian|Kayura|827B|个人工作台" . `
 
 | 套件 | 数量 | 命令 |
 |---|--:|---|
-| pytest（dashboard） | 317 | `python -m pytest dashboard -q` |
-| vitest（desktop-src） | 8 | `cd desktop-src && npx vitest run` |
-| layout-regression | 7 | `node --test desktop-src/layout-regression.test.mjs` |
+| pytest（dashboard） | 351 | `python -m pytest dashboard -q` |
+| vitest（desktop-src） | 10 | `cd desktop-src && npx vitest run` |
+| layout-regression | 10 | `node --test desktop-src/layout-regression.test.mjs` |
 
-## ④ 发布动作（Kayura 执行）
+## ④ 发布动作（维护者执行）
 
 1. `git init` + 首提交（.gitignore 已就位：运行时产物/配置/DB 全部排除）
 2. 创建 GitHub 仓库 `Hermes-Workbench`（MIT LICENSE 已就位）

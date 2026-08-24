@@ -69,6 +69,18 @@ test('health popover follows Workbench theming and closes on outside pointerdown
   assert.doesNotMatch(board, /bg-\(--ui-bg-primary\).*链路健康详情/)
 })
 
+test('detail and history reads use the host-native bounded request contract', () => {
+  assert.match(api, /fetchFile[\s\S]*?timeoutMs:\s*15_000/)
+  assert.match(api, /fetchRecentEvents[\s\S]*?timeoutMs:\s*15_000/)
+  assert.doesNotMatch(api, /withTimeout/)
+})
+
+test('today suggestions explain their deterministic basis without implying an agent decision', () => {
+  assert.match(board, /✨ 规则建议/)
+  assert.match(board, /依据任务状态、截止日期和最近结果生成/)
+  assert.doesNotMatch(board, /✨ Agent 建议/)
+})
+
 test('Hermes session composer contract remains stable', { skip: !hermesStyles }, () => {
   assert.match(hermesStyles, /--composer-width:\s*100%/)
   assert.match(hermesStyles, /--chat-min-width:\s*28rem/)

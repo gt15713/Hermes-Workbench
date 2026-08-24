@@ -7,7 +7,6 @@
 
 import { atom, type PluginRestOptions, type PluginStorage, queryClient } from '@hermes/plugin-sdk'
 import type { WbBoard, WbEvent, WbSearchResponse, WbSettings, WbSettingsResponse } from './types'
-import { withTimeout } from './request'
 
 type Rest = <T>(path: string, opts?: PluginRestOptions) => Promise<T>
 type Socket = (path: string, onMessage: (data: unknown) => void) => () => void
@@ -109,20 +108,16 @@ export const RECENT_EVENTS_KEY = (dir: string, file: string) => ['workbench', 'e
 export const fetchBoard = () => call<WbBoard>('/board')
 
 export const fetchFile = (dir: string, file: string) =>
-  withTimeout(
-    call<{ content: string }>(`/file?dirname=${encodeURIComponent(dir)}&filename=${encodeURIComponent(file)}`),
-    15_000,
-    '任务详情加载'
+  call<{ content: string }>(
+    `/file?dirname=${encodeURIComponent(dir)}&filename=${encodeURIComponent(file)}`,
+    { timeoutMs: 15_000 }
   )
 
 /** Task 5.2 批次 1：运行历史（复用 /recent，dir+file 时后端查 task_events 倒序） */
 export const fetchRecentEvents = (dir: string, file: string) =>
-  withTimeout(
-    call<{ entries: WbEvent[]; source?: string }>(
-      `/recent?limit=50&dir=${encodeURIComponent(dir)}&file=${encodeURIComponent(file)}`
-    ),
-    15_000,
-    '运行历史加载'
+  call<{ entries: WbEvent[]; source?: string }>(
+    `/recent?limit=50&dir=${encodeURIComponent(dir)}&file=${encodeURIComponent(file)}`,
+    { timeoutMs: 15_000 }
   )
 
 /** A4：全局搜索（标题/内容/标签；tag 可选过滤）。 */
