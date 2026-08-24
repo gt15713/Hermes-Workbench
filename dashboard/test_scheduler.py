@@ -106,6 +106,24 @@ class TestWriteDailyWorklog:
 
 
 class TestLease:
+    def test_pid_alive_probe_never_signals_process(self, monkeypatch):
+        """Liveness checks must be read-only, especially on Windows.
+
+        ``os.kill(pid, 0)`` is a POSIX idiom; on Windows it can deliver a
+        console control event and was terminating the current scheduler owner.
+        """
+        import os
+
+        monkeypatch.setattr(
+            scheduler.os,
+            "kill",
+            lambda *_args: (_ for _ in ()).throw(
+                AssertionError("liveness probe must not call os.kill")
+            ),
+        )
+
+        assert scheduler._pid_alive(os.getpid()) is True
+
     def test_acquire_release_cycle(self, tmp_path):
         lease = scheduler._Lease(tmp_path / "scheduler.lock")
         assert lease.acquire() is True
@@ -169,6 +187,46 @@ class TestJobRunners:
         result = scheduler._job_daily_report(None)
         assert result["generated"] == "empty"
 
+    def test_daily_report_appends_yellow_link_status(self, monkeypatch):
+        delivered = []
+        monkeypatch.setattr(scheduler, "_script_data", lambda _name: {"today": "2026-08-24"})
+        monkeypatch.setattr(
+            scheduler,
+            "_generate",
+            lambda _ctx, _prompt, _data: "<WORKLOG></WORKLOG><QQMSG>📋 日报正文</QQMSG>",
+        )
+        monkeypatch.setattr(
+            scheduler,
+            "_current_health_snapshot",
+            lambda: {"status": "yellow", "label": "链路待观察"},
+        )
+        monkeypatch.setattr(scheduler, "_deliver", lambda text: delivered.append(text) or "sent")
+        monkeypatch.setattr("workbench_config.get_write_worklog", lambda: False)
+
+        scheduler._job_daily_report(None)
+
+        assert delivered == ["📋 日报正文\n\n🟡 链路状态：链路待观察"]
+
+    def test_daily_report_omits_green_link_status(self, monkeypatch):
+        delivered = []
+        monkeypatch.setattr(scheduler, "_script_data", lambda _name: {"today": "2026-08-24"})
+        monkeypatch.setattr(
+            scheduler,
+            "_generate",
+            lambda _ctx, _prompt, _data: "<WORKLOG></WORKLOG><QQMSG>📋 日报正文</QQMSG>",
+        )
+        monkeypatch.setattr(
+            scheduler,
+            "_current_health_snapshot",
+            lambda: {"status": "green", "label": "链路正常"},
+        )
+        monkeypatch.setattr(scheduler, "_deliver", lambda text: delivered.append(text) or "sent")
+        monkeypatch.setattr("workbench_config.get_write_worklog", lambda: False)
+
+        scheduler._job_daily_report(None)
+
+        assert delivered == ["📋 日报正文"]
+
     def test_deliver_empty_skips(self):
         assert scheduler._deliver("") == "skipped-empty"
         assert scheduler._deliver("   ") == "skipped-empty"
@@ -197,6 +255,27 @@ class TestDeliveryRetry:
         scheduler._save_state(state)
         assert scheduler._retry_pending_delivery() is True
         assert scheduler._load_state()["pending_delivery"] is None
+
+    def test_retry_success_resolves_delivery_error(self, monkeypatch, tmp_path):
+        """A delivered retry must not leave health permanently red."""
+        monkeypatch.setattr(scheduler, "_STATE_FILE", tmp_path / "state.json")
+        monkeypatch.setattr(scheduler, "_deliver", lambda t: "sent")
+        scheduler._queue_delivery("消息")
+        state = scheduler._load_state()
+        state["errors"] = {
+            "count": 1,
+            "last": {
+                "job": "daily_report",
+                "at": "2026-08-23T20:00:04",
+                "reason": "delivery:failed",
+            },
+        }
+        state["pending_delivery"]["next_attempt_at"] = "2020-01-01T00:00:00"
+        scheduler._save_state(state)
+
+        assert scheduler._retry_pending_delivery() is True
+        resolved = scheduler._load_state()
+        assert resolved["errors"] == {"count": 0, "last": None}
 
     def test_retry_drops_after_max(self, monkeypatch, tmp_path):
         monkeypatch.setattr(scheduler, "_STATE_FILE", tmp_path / "state.json")
@@ -235,6 +314,26 @@ class TestP0CVisibility:
         assert scheduler._result_health({"scanned": 0, "errors": 0}) == (True, "")
         assert scheduler._result_health({"exit": 0}) == (True, "")
 
+    def test_legacy_delivery_failure_without_pending_retry_is_not_active(self):
+        state = {
+            "pending_delivery": None,
+            "errors": {
+                "count": 1,
+                "last": {"job": "daily_report", "reason": "delivery:failed"},
+            },
+        }
+        assert scheduler._active_errors(state) == (0, None)
+
+    def test_exhausted_delivery_remains_active(self):
+        state = {
+            "pending_delivery": None,
+            "errors": {
+                "count": 1,
+                "last": {"job": "daily_report", "reason": "delivery:dropped"},
+            },
+        }
+        assert scheduler._active_errors(state) == (1, state["errors"]["last"])
+
     def test_health_empty_not_ok(self):
         ok, reason = scheduler._result_health({"generated": "empty"})
         assert ok is False and reason == "empty"
@@ -255,8 +354,8 @@ class TestP0CVisibility:
         assert state["errors"]["count"] == 2
         assert state["errors"]["last"]["job"] == "nudge"
         status = scheduler.scheduler_status()
-        assert status["error_count"] == 2
-        assert status["last_error"]["reason"] == "delivery:failed"
+        assert status["error_count"] == 1
+        assert status["last_error"] is None
 
 
 class TestCatchUp:

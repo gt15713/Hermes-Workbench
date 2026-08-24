@@ -125,13 +125,53 @@ def match_cron(expr: str, now: Optional[datetime] = None) -> bool:
 def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
+    # ``os.kill(pid, 0)`` is a POSIX liveness idiom but is destructive on
+    # Windows: CPython maps signal 0 to CTRL_C_EVENT and can terminate the
+    # scheduler owner (and its whole console group).  Prefer psutil's
+    # read-only process-table probe on every platform.  Hermes ships psutil;
+    # the fallback remains for stripped standalone plugin test installs.
     try:
-        os.kill(pid, 0)
+        import psutil
+
+        try:
+            return psutil.Process(int(pid)).status() != psutil.STATUS_ZOMBIE
+        except psutil.NoSuchProcess:
+            return False
+        except psutil.AccessDenied:
+            return True
+    except ImportError:
+        pass
+
+    if os.name == "nt":
+        try:
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32
+            kernel32.OpenProcess.restype = ctypes.c_void_p
+            kernel32.WaitForSingleObject.restype = ctypes.c_uint
+            process_query = 0x1000
+            synchronize = 0x100000
+            wait_timeout = 0x00000102
+            handle = kernel32.OpenProcess(process_query | synchronize, False, int(pid))
+            if not handle:
+                # Access denied proves the PID exists; all other failures are
+                # treated as absent so a genuinely stale lease can recover.
+                return ctypes.get_last_error() == 5
+            try:
+                return kernel32.WaitForSingleObject(handle, 0) == wait_timeout
+            finally:
+                kernel32.CloseHandle(handle)
+        except (OSError, AttributeError):
+            return False
+
+    try:
+        os.kill(pid, 0)  # POSIX-only fallback
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
         return True
     except OSError:
-        return False
-    except Exception:  # 2026-08-23：Windows os.kill 偶发「exception set」（非 OSError），
-        # 多进程抢租约时会让调度线程崩溃 → 桌面端反复重启 → 渲染连接超时「后端已停止」。
         return False
 
 
@@ -277,6 +317,45 @@ def _record_error(job_key: str, started_at: str, reason: str) -> None:
     _save_state(state)
 
 
+def _resolve_last_delivery_error(state: dict) -> None:
+    """Clear the actionable health error once its queued delivery succeeds.
+
+    ``errors.count`` predates per-attempt delivery retries and is surfaced by
+    ``/health`` as a current fault count. Leaving the failed first attempt in
+    place after a successful retry makes the UI permanently red even though
+    ``pending_delivery`` is empty and the delivery chain recovered.
+    """
+    errors = state.get("errors") or {}
+    last = errors.get("last") or {}
+    if last.get("reason") != "delivery:failed":
+        return
+    remaining = max(0, int(errors.get("count", 0)) - 1)
+    errors["count"] = remaining
+    if remaining == 0:
+        errors["last"] = None
+    state["errors"] = errors
+
+
+def _active_errors(state: dict) -> tuple[int, dict | None]:
+    """Return unresolved health errors, excluding recovered legacy delivery state.
+
+    Older schedulers cleared ``pending_delivery`` after a successful retry but
+    left ``delivery:failed`` in the cumulative counter.  An exhausted retry is
+    now recorded as ``delivery:dropped`` so it remains visible.
+    """
+    errors = state.get("errors") or {}
+    count = int(errors.get("count", 0) or 0)
+    last = errors.get("last")
+    if (
+        count > 0
+        and isinstance(last, dict)
+        and last.get("reason") == "delivery:failed"
+        and not state.get("pending_delivery")
+    ):
+        return max(0, count - 1), None
+    return count, last
+
+
 def _last_cron_fire(expr: str, before: datetime) -> datetime | None:
     """从 before 往前回溯最近一次 cron 命中（最多 24h；A4 catch-up 用）。"""
     t = before.replace(second=0, microsecond=0)
@@ -327,11 +406,18 @@ def _retry_pending_delivery() -> bool:
     result = _deliver(pending["text"])
     if result == "sent":
         state["pending_delivery"] = None
+        _resolve_last_delivery_error(state)
         _save_state(state)
         _log.info("workbench scheduler: queued delivery sent (attempt %s)", attempts)
         return True
     if attempts >= _DELIVERY_RETRY_MAX:
         state["pending_delivery"] = None
+        errors = state.get("errors") or {}
+        last = errors.get("last") or {}
+        if last.get("reason") == "delivery:failed":
+            last["reason"] = "delivery:dropped"
+            errors["last"] = last
+            state["errors"] = errors
         _save_state(state)
         _log.error("workbench scheduler: queued delivery dropped after %s attempts", attempts)
         return False
@@ -565,15 +651,21 @@ def _job_maintenance(ctx: Any) -> dict:
     return summary
 
 
-_DAILY_PROMPT = """工作台每日日报（Workbench 内建调度生成，宿主 LLM 判断）：根据注入 JSON 生成中文判断型日报。
-包含今日完成/新增/遗留、明日关注、超期与阻塞，QQ 段不超过一屏；周日输出本周完成/遗留/模式/下周建议。
+_DAILY_PROMPT = """根据注入的 Workbench JSON 生成中文判断型日报。只保留用户需要做决策的信息，不复述调度器、脚本、文件路径、job id、执行耗时等系统细节。
 
 输出格式（两段，严格用标记包裹，不要输出其他内容）：
 <WORKLOG>
-工作日志 markdown 全文：首行为 # 工作台日报 — YYYY-MM-DD（周X），第二行 > [Auto-generated] 数据来源：Workbench 预运行脚本；正文按 ## 今日完成 / ## 今日新增 / ## 遗留待回看 / ## 待验证 / ## 阻塞 / 超期 / ## 判断与明日关注 组织（周日加 ## 周进度）。当日无实质变更时输出空 <WORKLOG></WORKLOG>。
+工作日志 markdown 全文：首行为 # Workbench 日报 — YYYY-MM-DD（周X）；正文按 ## 今日推进 / ## 待处理 / ## 风险与阻塞 / ## 明日优先 组织，周日加 ## 本周复盘。合并重复项，每项写清结论与下一步；无内容的章节省略。当日无实质变更时输出空。
 </WORKLOG>
 <QQMSG>
-一屏中文要点（标题 + 今日完成/新增/遗留简况 + 明日关注）；无值得报告内容时输出空 <QQMSG></QQMSG>。
+控制在 900 个中文字符内，使用以下成品格式；没有内容的栏目直接省略：
+📋 Workbench 日报 · MM.DD 周X
+💡 一句话判断：今天最重要的进展或风险
+✅ 今日推进（最多 3 条）
+⏳ 待处理（最多 3 条）
+⚠️ 风险与阻塞（仅确有风险时）
+🎯 明日优先（最多 3 条，按优先级排序）
+不要出现 Cronjob Response、job_id、管理任务提示、Auto-generated、内部标记或生成过程。无值得报告内容时输出空。
 </QQMSG>"""
 
 _NUDGE_PROMPT = """工作台 auto-nudge（Workbench 内建调度生成，宿主 LLM 判断）：根据注入 JSON（overdue/blocked/today_due/stale/duplicate）生成一条判断型提醒：超期任务（标题+超期天数）、被阻塞项、可交给 Agent 的建议，不超过 1 屏。
@@ -581,11 +673,34 @@ _NUDGE_PROMPT = """工作台 auto-nudge（Workbench 内建调度生成，宿主 
 只报告，不修改任何文件。严格用 <QQMSG>...</QQMSG> 包裹提醒文本，不要输出其他内容。"""
 
 
+def _current_health_snapshot() -> dict:
+    try:
+        from plugin_api import health
+
+        result = health()
+        return result if isinstance(result, dict) else {}
+    except Exception as exc:  # noqa: BLE001
+        _log.warning("workbench daily report health snapshot failed: %s", exc)
+        return {"status": "yellow", "label": "健康状态暂不可用"}
+
+
+def _health_report_line(snapshot: dict) -> str:
+    status = snapshot.get("status")
+    if status not in {"yellow", "red"}:
+        return ""
+    icon = "🟡" if status == "yellow" else "🔴"
+    label = str(snapshot.get("label") or ("链路待观察" if status == "yellow" else "链路故障"))
+    return f"{icon} 链路状态：{label}"
+
+
 def _job_daily_report(ctx: Any) -> dict:
     """工作台每日日报（20:00）：数据 → LLM → 工作日志 → QQ。"""
     from workbench_config import get_write_worklog
 
     data = _script_data("workbench_daily_report.py")
+    health_snapshot = _current_health_snapshot()
+    if isinstance(data, dict):
+        data["link_health"] = health_snapshot
     text = _generate(ctx, _DAILY_PROMPT, data)
     if not text:
         return {"generated": "empty", "worklog": "skipped-empty", "delivery": "skipped-empty"}
@@ -595,14 +710,18 @@ def _job_daily_report(ctx: Any) -> dict:
         if get_write_worklog()
         else "skipped-disabled"
     )
-    delivery = _deliver(parts.get("qq") or "")
-    if delivery == "failed" and parts.get("qq"):
-        _queue_delivery(parts["qq"])
+    qq_message = parts.get("qq") or ""
+    health_line = _health_report_line(health_snapshot)
+    if qq_message and health_line:
+        qq_message = f"{qq_message.rstrip()}\n\n{health_line}"
+    delivery = _deliver(qq_message)
+    if delivery == "failed" and qq_message:
+        _queue_delivery(qq_message)
     return {
         "generated": "ok",
         "worklog": worklog,
         "delivery": delivery,
-        "queued_retry": delivery == "failed" and bool(parts.get("qq")),
+        "queued_retry": delivery == "failed" and bool(qq_message),
     }
 
 
@@ -793,7 +912,7 @@ def stop_scheduler() -> None:
 def scheduler_status() -> dict:
     """可观测性：当前租约/状态/最近触发/错误计数。"""
     state = _load_state()
-    errors = state.get("errors") or {}
+    error_count, last_error = _active_errors(state)
     return {
         "running": _SCHEDULER is not None and _SCHEDULER._thread is not None and _SCHEDULER._thread.is_alive(),
         "pid": os.getpid(),
@@ -803,6 +922,6 @@ def scheduler_status() -> dict:
             else None
         ),
         "last_runs": state.get("last_runs", {}),
-        "error_count": int(errors.get("count", 0)),
-        "last_error": errors.get("last"),
+        "error_count": error_count,
+        "last_error": last_error,
     }

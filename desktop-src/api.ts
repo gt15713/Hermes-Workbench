@@ -150,6 +150,15 @@ export interface WbHealth {
   last_error?: { job: string; at: string; reason: string } | null
   delivery_pending: boolean
   vault_configured: boolean
+  status: 'green' | 'yellow' | 'red' | 'disabled'
+  label: string
+  checks: Array<{
+    id: string
+    label: string
+    status: 'green' | 'yellow' | 'red' | 'disabled'
+    detail: string
+  }>
+  last_updated?: string | null
   ts: string
 }
 export const fetchHealth = () => call<WbHealth>('/health')

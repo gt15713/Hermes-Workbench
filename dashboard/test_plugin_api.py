@@ -1058,6 +1058,68 @@ class TestEventsHealth:
         assert r["ok"] is True
         assert r["db"] is True
 
+    def test_health_returns_green_verdict_with_subsystem_checks(self, wb, monkeypatch):
+        plugin_root = wb / "plugin"
+        dashboard_dir = plugin_root / "dashboard"
+        dashboard_dir.mkdir(parents=True)
+        monkeypatch.setattr(api, "_DASHBOARD_DIR", str(dashboard_dir))
+        monkeypatch.setattr(api, "get_vault", lambda: "D:/Obsidian")
+        (plugin_root / "scheduler.lock").write_text(
+            '{"heartbeat_at":"2999-01-01T00:00:00"}', encoding="utf-8"
+        )
+        (plugin_root / "scheduler-state.json").write_text(
+            '{"pending_delivery":null,"errors":{"count":0,"last":null}}',
+            encoding="utf-8",
+        )
+
+        result = api.health()
+
+        assert result["status"] == "green"
+        assert result["label"] == "链路正常"
+        assert [(c["id"], c["status"]) for c in result["checks"]] == [
+            ("database", "green"),
+            ("scheduler", "green"),
+            ("delivery", "green"),
+            ("vault", "green"),
+        ]
+
+    def test_health_returns_yellow_for_pending_delivery(self, wb, monkeypatch):
+        plugin_root = wb / "plugin"
+        dashboard_dir = plugin_root / "dashboard"
+        dashboard_dir.mkdir(parents=True)
+        monkeypatch.setattr(api, "_DASHBOARD_DIR", str(dashboard_dir))
+        monkeypatch.setattr(api, "get_vault", lambda: "D:/Obsidian")
+        (plugin_root / "scheduler.lock").write_text(
+            '{"heartbeat_at":"2999-01-01T00:00:00"}', encoding="utf-8"
+        )
+        (plugin_root / "scheduler-state.json").write_text(
+            '{"pending_delivery":{"attempts":1},"errors":{"count":0,"last":null}}',
+            encoding="utf-8",
+        )
+
+        result = api.health()
+
+        assert result["status"] == "yellow"
+        assert result["label"] == "链路待观察"
+        assert next(c for c in result["checks"] if c["id"] == "delivery")["status"] == "yellow"
+
+    def test_health_returns_red_for_dead_scheduler(self, wb, monkeypatch):
+        plugin_root = wb / "plugin"
+        dashboard_dir = plugin_root / "dashboard"
+        dashboard_dir.mkdir(parents=True)
+        monkeypatch.setattr(api, "_DASHBOARD_DIR", str(dashboard_dir))
+        monkeypatch.setattr(api, "get_vault", lambda: "D:/Obsidian")
+        (plugin_root / "scheduler-state.json").write_text(
+            '{"pending_delivery":null,"errors":{"count":0,"last":null}}',
+            encoding="utf-8",
+        )
+
+        result = api.health()
+
+        assert result["status"] == "red"
+        assert result["label"] == "链路故障"
+        assert next(c for c in result["checks"] if c["id"] == "scheduler")["status"] == "red"
+
     def test_events_websocket(self, wb, monkeypatch):
         """WS 事件通道：鉴权门 monkeypatch 后手工驱动推送循环——events 帧或 heartbeat 帧。"""
         import asyncio

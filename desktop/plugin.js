@@ -1774,6 +1774,7 @@ function WorkbenchBoardPage() {
   }, [openMenuKey]);
   const [showNewTask, setShowNewTask] = useState2(false);
   const [showSettings, setShowSettings] = useState2(false);
+  const [showHealthDetails, setShowHealthDetails] = useState2(false);
   const health = useQuery2({ queryKey: ["workbench", "health"], queryFn: fetchHealth, refetchInterval: 3e4 });
   const settings = useQuery2({ queryKey: ["workbench", "settings"], queryFn: fetchSettings });
   const dueFilter = useValue2($dueFilter);
@@ -1865,8 +1866,19 @@ function WorkbenchBoardPage() {
   const deliverMissing = settings.data?.ok === true && !settings.data.config.deliver_target;
   const showDeliveryBanner = !!deliverMissing && bannerDismissedDate !== board.today;
   const healthData = health.data;
-  const healthTone = !healthData ? "bg-[#94a3b8]" : !healthData.scheduler_alive || healthData.error_count > 0 || healthData.delivery_pending ? "bg-[#f87171]" : healthData.vault_configured ? "bg-[#34d399]" : "bg-[#fbbf24]";
-  const healthLabel = !healthData ? "健康检查…" : !healthData.scheduler_alive ? "调度器未运行" : healthData.error_count > 0 ? `错误 ${healthData.error_count}` : healthData.delivery_pending ? "投递待重试" : healthData.vault_configured ? "链路正常" : "链路正常（未配 vault）";
+  const healthTone = {
+    green: "bg-[#34d399]",
+    yellow: "bg-[#fbbf24]",
+    red: "bg-[#f87171]",
+    disabled: "bg-[#94a3b8]"
+  }[healthData?.status ?? "disabled"];
+  const checkTone = (status) => ({
+    green: "bg-[#34d399]",
+    yellow: "bg-[#fbbf24]",
+    red: "bg-[#f87171]",
+    disabled: "bg-[#94a3b8]"
+  })[status];
+  const healthLabel = healthData?.label ?? "健康检查…";
   return /* @__PURE__ */ jsxs3("div", { className: "wb-root flex h-full flex-col", children: [
     showDeliveryBanner && /* @__PURE__ */ jsxs3("div", { className: "flex items-center gap-2 border-b border-[#fbbf24]/30 bg-[#fbbf24]/10 px-3 py-1.5 text-[0.75rem] text-[#fbbf24]", children: [
       /* @__PURE__ */ jsx3(Codicon2, { name: "warning", size: "0.8rem" }),
@@ -2033,17 +2045,40 @@ function WorkbenchBoardPage() {
           },
           key
         )) }),
-        /* @__PURE__ */ jsxs3(
-          "span",
-          {
-            className: "flex items-center gap-1 text-[0.75rem] text-(--ui-text-secondary)",
-            title: healthData?.last_error ? `最近错误：${healthData.last_error.job} / ${healthData.last_error.reason}` : `scheduler=${healthData?.scheduler_alive ?? "?"} 错误=${healthData?.error_count ?? "?"} 投递待重试=${healthData?.delivery_pending ?? "?"}`,
-            children: [
-              /* @__PURE__ */ jsx3("span", { className: `size-2 rounded-full ${healthTone}` }),
-              /* @__PURE__ */ jsx3("span", { children: healthLabel })
-            ]
-          }
-        ),
+        /* @__PURE__ */ jsxs3("div", { className: "relative", children: [
+          /* @__PURE__ */ jsxs3(
+            "button",
+            {
+              type: "button",
+              className: "flex items-center gap-1 rounded px-1.5 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary)",
+              onClick: () => setShowHealthDetails((v) => !v),
+              "aria-expanded": showHealthDetails,
+              title: "查看链路健康详情",
+              children: [
+                /* @__PURE__ */ jsx3("span", { className: `size-2 rounded-full ${healthTone}` }),
+                /* @__PURE__ */ jsx3("span", { children: healthLabel }),
+                /* @__PURE__ */ jsx3(Codicon2, { name: showHealthDetails ? "chevron-up" : "chevron-down", size: "0.65rem" })
+              ]
+            }
+          ),
+          showHealthDetails && healthData && /* @__PURE__ */ jsxs3("div", { className: "absolute right-0 top-full z-30 mt-1 w-72 rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-primary) p-2 shadow-xl", children: [
+            /* @__PURE__ */ jsxs3("div", { className: "mb-1.5 flex items-center justify-between text-[0.75rem] font-semibold text-(--ui-text-primary)", children: [
+              /* @__PURE__ */ jsx3("span", { children: "链路健康详情" }),
+              /* @__PURE__ */ jsx3("span", { className: "font-normal text-(--ui-text-quaternary)", children: healthData.ts })
+            ] }),
+            /* @__PURE__ */ jsx3("div", { className: "space-y-1", children: healthData.checks.map((check) => /* @__PURE__ */ jsxs3("div", { className: "flex items-start gap-2 rounded px-1.5 py-1 hover:bg-(--ui-bg-quaternary)", children: [
+              /* @__PURE__ */ jsx3("span", { className: `mt-1 size-2 shrink-0 rounded-full ${checkTone(check.status)}` }),
+              /* @__PURE__ */ jsxs3("div", { className: "min-w-0 flex-1", children: [
+                /* @__PURE__ */ jsx3("div", { className: "text-[0.75rem] text-(--ui-text-primary)", children: check.label }),
+                /* @__PURE__ */ jsx3("div", { className: "text-[0.6875rem] text-(--ui-text-tertiary)", children: check.detail })
+              ] })
+            ] }, check.id)) }),
+            healthData.last_updated && /* @__PURE__ */ jsxs3("div", { className: "mt-1.5 border-t border-(--ui-stroke-secondary) pt-1.5 text-[0.6875rem] text-(--ui-text-quaternary)", children: [
+              "最近状态更新：",
+              healthData.last_updated.replace("T", " ")
+            ] })
+          ] })
+        ] }),
         /* @__PURE__ */ jsxs3(Button2, { size: "sm", variant: "outline", onClick: () => setShowSettings(true), title: "工作台设置", children: [
           /* @__PURE__ */ jsx3(Codicon2, { name: "gear", size: "0.7rem" }),
           /* @__PURE__ */ jsx3("span", { className: "ml-1", children: "设置" })

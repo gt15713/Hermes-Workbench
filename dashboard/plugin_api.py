@@ -542,15 +542,56 @@ def health() -> dict:
         state = _json.loads((plugin_root / "scheduler-state.json").read_text(encoding="utf-8"))
     except Exception:  # noqa: BLE001
         state = {}
-    errors = state.get("errors") or {}
+    from scheduler import _active_errors
+
+    error_count, last_error = _active_errors(state)
+    delivery_pending = bool(state.get("pending_delivery"))
+    vault_configured = bool(get_vault())
+    checks = [
+        {
+            "id": "database",
+            "label": "工作台数据库",
+            "status": "green" if db_ok else "red",
+            "detail": "可读写" if db_ok else "不可用",
+        },
+        {
+            "id": "scheduler",
+            "label": "定时调度器",
+            "status": "green" if scheduler_alive else "red",
+            "detail": "心跳正常" if scheduler_alive else "心跳超时或未启动",
+        },
+        {
+            "id": "delivery",
+            "label": "消息投递",
+            "status": "red" if error_count > 0 else ("yellow" if delivery_pending else "green"),
+            "detail": (
+                f"未解决错误 {error_count} 项"
+                if error_count > 0
+                else ("等待重试" if delivery_pending else "无待处理故障")
+            ),
+        },
+        {
+            "id": "vault",
+            "label": "Obsidian 写入",
+            "status": "green" if vault_configured else "yellow",
+            "detail": "已配置" if vault_configured else "未配置（不影响工作台）",
+        },
+    ]
+    statuses = {check["status"] for check in checks}
+    status = "red" if "red" in statuses else ("yellow" if "yellow" in statuses else "green")
+    label = {"green": "链路正常", "yellow": "链路待观察", "red": "链路故障"}[status]
     return {
         "ok": True,
         "db": db_ok,
         "scheduler_alive": scheduler_alive,
-        "error_count": int(errors.get("count", 0)),
-        "last_error": errors.get("last"),
-        "delivery_pending": bool(state.get("pending_delivery")),
-        "vault_configured": bool(get_vault()),
+        "error_count": error_count,
+        "last_error": last_error,
+        "delivery_pending": delivery_pending,
+        "vault_configured": vault_configured,
+        "status": status,
+        "label": label,
+        "checks": checks,
+        "last_updated": state.get("updated_at"),
         "ts": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }
 
