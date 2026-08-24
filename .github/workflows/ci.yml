@@ -35,9 +35,6 @@ jobs:
       - name: Frontend deps
         run: cd desktop-src && npm ci
 
-      - name: esbuild (bundle rebuild, --no-save 不锁 lock)
-        run: cd desktop-src && npm i --no-save esbuild
-
       - name: Vitest
         run: cd desktop-src && npx vitest run
 
