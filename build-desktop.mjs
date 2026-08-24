@@ -28,7 +28,7 @@ const styleModule = {
   name: 'workbench-css-inline',
   setup(builder) {
     builder.onLoad({ filter: /workbench\.css$/ }, args => {
-      const css = readFileSync(args.path, 'utf8')
+      const css = readFileSync(args.path, 'utf8').replace(/\r\n/g, '\n')
       return {
         loader: 'js',
         contents: `
@@ -39,6 +39,7 @@ if (!node) {
   node.id = id;
   document.head.appendChild(node);
 }
+
 node.textContent = ${JSON.stringify(css)};
 `,
       }
@@ -46,8 +47,22 @@ node.textContent = ${JSON.stringify(css)};
   },
 }
 
+// Git may materialize source files as CRLF on Windows. Normalize source text
+// before bundling so a clean checkout produces byte-identical output on every
+// machine and source-map comments never contain checkout-specific paths.
+const normalizedSourceModule = {
+  name: 'workbench-source-normalize',
+  setup(builder) {
+    builder.onLoad({ filter: /\.(?:ts|tsx)$/ }, args => ({
+      loader: args.path.endsWith('.tsx') ? 'tsx' : 'ts',
+      contents: readFileSync(args.path, 'utf8').replace(/\r\n/g, '\n'),
+    }))
+  },
+}
+
 mkdirSync(outputRoot, { recursive: true })
 await build({
+  absWorkingDir: pluginRoot,
   entryPoints: [join(sourceRoot, 'plugin.tsx')],
   outfile: outputFile,
   bundle: true,
@@ -56,7 +71,7 @@ await build({
   target: ['es2022'],
   jsx: 'automatic',
   external: ['@hermes/plugin-sdk', 'react', 'react/jsx-runtime'],
-  plugins: [styleModule],
+  plugins: [normalizedSourceModule, styleModule],
   legalComments: 'none',
   sourcemap: false,
   charset: 'utf8',

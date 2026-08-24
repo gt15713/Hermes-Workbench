@@ -1,6 +1,6 @@
 # P0-E 发布闸门检查单（2026-08-23 定稿）
 
-> 放行判定 = 干净环境端到端通过 + 隐私门禁零命中 + 当前回归基线 371 全绿，不是文件清单勾满。
+> 放行判定 = 干净环境端到端通过 + 隐私门禁零命中 + 当前回归基线 373 全绿，不是文件清单勾满。
 
 ## ① 干净环境端到端（唯一硬判据）
 
@@ -25,11 +25,11 @@ python scripts/workbench_privacy_gate.py
 
 期望：0 命中。`desktop/plugin.js` 必须包含在扫描内（它进仓库）。
 
-## ③ 回归基线（332 项全绿）
+## ③ 回归基线（373 项全绿）
 
 | 套件 | 数量 | 命令 |
 |---|--:|---|
-| pytest（dashboard） | 351 | `python -m pytest dashboard -q` |
+| pytest（dashboard） | 353 | `python -m pytest dashboard -q` |
 | vitest（desktop-src） | 10 | `cd desktop-src && npx vitest run` |
 | layout-regression | 10 | `node --test desktop-src/layout-regression.test.mjs` |
 

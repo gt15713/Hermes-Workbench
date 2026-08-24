@@ -2,9 +2,8 @@
  * @hermes/plugin-sdk 环境声明（2026-08-23，CoderX）。
  *
  * SDK 由 Hermes 桌面端宿主运行时提供（构建 external，不进仓库）。
- * 本声明只覆盖本插件用到的 API 面，类型以 any 放宽——
- * Typecheck 的价值在于捕捉插件自身代码错误（未定义变量/内部类型不匹配），
- * 不校验宿主 SDK 实现。SDK 真实类型随 Hermes 发行。
+ * 本声明只覆盖本插件用到的 API 面。PluginRestOptions 与 Hermes 0.20.5
+ * 的权威 SDK 契约保持一致，其余宿主 UI 类型仍按最小兼容面声明。
  */
 declare module '@hermes/plugin-sdk' {
   export function atom<T>(initial: T): any
@@ -24,7 +23,12 @@ declare module '@hermes/plugin-sdk' {
   export function useQuery(...args: any[]): any
   export function useMutation(...args: any[]): any
   export function useValue(...args: any[]): any
-  export type PluginRestOptions = any
+  export interface PluginRestOptions {
+    method?: string
+    body?: unknown
+    upload?: { filename: string; contentType?: string; bytes: ArrayBuffer }
+    timeoutMs?: number
+  }
   export type PluginStorage = any
   export type PluginLocaleBundles = any
   export type HermesPlugin = any

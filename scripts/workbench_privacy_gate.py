@@ -16,6 +16,7 @@ _MARKERS = (
     "C:" + "/Users",
     "C:" + "\\Users",
     "D:" + "/Obsidian",
+    "D:" + "\\Obsidian",
     "Ka" + "yura",
     "827" + "B",
     "\u4e2a\u4eba\u5de5\u4f5c\u53f0",
@@ -35,6 +36,7 @@ def scan_paths(paths: Iterable[Path], *, root: Path) -> list[str]:
         try:
             lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
         except OSError:
+            hits.append(f"{relative.as_posix()}:unreadable")
             continue
         for number, line in enumerate(lines, 1):
             if any(marker in line for marker in _MARKERS):

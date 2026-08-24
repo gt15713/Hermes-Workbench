@@ -1310,7 +1310,7 @@ function TodayView({ board, onPreview, onGoBoard }: {
           </div>
           {brief?.degraded ? (
             <div className="rounded-md border border-(--ui-stroke-tertiary) px-2.5 py-2 text-[0.75rem] text-(--ui-text-quaternary)">
-              Agent 简报暂不可用（Hermes 未响应）——规则区仍实时可用
+              规则建议暂不可用，请稍后重试
             </div>
           ) : visibleCards.length === 0 ? (
             <div className="px-1 text-[0.75rem] text-(--ui-text-quaternary)">暂无建议</div>
