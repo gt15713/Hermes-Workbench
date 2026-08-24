@@ -38,6 +38,7 @@ from contract import (
     PARTITIONS,
     SCHEMA_VERSION,
 )
+from qq_health import assess_qq_health
 from repo import _repo as file_repo
 from wb_utils import (
     WORKBENCH_ROOT,
@@ -75,6 +76,21 @@ from workbench_config import (
 
 router = APIRouter()
 _log = logging.getLogger("workbench-view")
+
+
+def _get_qq_health() -> dict:
+    """Read QQ runtime evidence without opening a second connection or exposing identifiers."""
+    hermes_home = Path(
+        os.environ.get(
+            "HERMES_HOME",
+            str(_Path(__file__).resolve().parent.parent.parent.parent),
+        )
+    )
+    return assess_qq_health(
+        state_path=hermes_home / "gateway_state.json",
+        log_path=hermes_home / "logs" / "gateway.log",
+        adapter_path=hermes_home / "hermes-agent" / "gateway" / "platforms" / "qqbot" / "adapter.py",
+    )
 
 # 写操作全局锁（进程内串行化读-改-写；跨进程由调用方纪律+原子写兜底）
 # 2026-08-09 多选批量：Lock → RLock（批量接口循环调用单条 handler 时同线程可重入，防死锁）
@@ -522,7 +538,7 @@ def brief() -> dict:
 
 @router.get("/health")
 def health() -> dict:
-    """链路健康（P0-3 / WB F3 精简版）：DB / scheduler 租约 / 投递错误 / vault 配置。"""
+    """链路健康：Workbench 子系统 + 只读 QQ 传输/摄取/兼容性证据。"""
     import json as _json
 
     try:
@@ -547,6 +563,7 @@ def health() -> dict:
     error_count, last_error = _active_errors(state)
     delivery_pending = bool(state.get("pending_delivery"))
     vault_configured = bool(get_vault())
+    qq = _get_qq_health()
     checks = [
         {
             "id": "database",
@@ -576,6 +593,26 @@ def health() -> dict:
             "status": "green" if vault_configured else "yellow",
             "detail": "已配置" if vault_configured else "未配置（不影响工作台）",
         },
+        {
+            "id": "qq_transport",
+            "label": "QQ 连接",
+            **qq["transport"],
+        },
+        {
+            "id": "qq_c2c",
+            "label": "QQ 私聊摄取",
+            **qq["c2c"],
+        },
+        {
+            "id": "qq_group",
+            "label": "QQ 群 @ 摄取",
+            **qq["group"],
+        },
+        {
+            "id": "qq_full_group",
+            "label": "QQ 普通群消息",
+            **qq["full_group"],
+        },
     ]
     statuses = {check["status"] for check in checks}
     status = "red" if "red" in statuses else ("yellow" if "yellow" in statuses else "green")
@@ -588,6 +625,7 @@ def health() -> dict:
         "last_error": last_error,
         "delivery_pending": delivery_pending,
         "vault_configured": vault_configured,
+        "qq": qq,
         "status": status,
         "label": label,
         "checks": checks,

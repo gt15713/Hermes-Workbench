@@ -1052,6 +1052,16 @@ class TestToTaskPsych:
 class TestEventsHealth:
     """阶段 4：/health + /events WS 事件通道。"""
 
+    @staticmethod
+    def _healthy_qq():
+        return {
+            "status": "green",
+            "transport": {"status": "green", "detail": "QQ WebSocket 已连接"},
+            "c2c": {"status": "green", "detail": "最近私聊摄取：2026-08-24 12:15:22"},
+            "group": {"status": "green", "detail": "最近群聊摄取：2026-08-24 14:08:36"},
+            "full_group": {"status": "green", "detail": "适配器已识别普通群消息事件"},
+        }
+
     def test_health_ok(self, wb):
         """/health 返回 ok + DB 可读。"""
         r = api.health()
@@ -1064,6 +1074,7 @@ class TestEventsHealth:
         dashboard_dir.mkdir(parents=True)
         monkeypatch.setattr(api, "_DASHBOARD_DIR", str(dashboard_dir))
         monkeypatch.setattr(api, "get_vault", lambda: "D:/Obsidian")
+        monkeypatch.setattr(api, "_get_qq_health", self._healthy_qq)
         (plugin_root / "scheduler.lock").write_text(
             '{"heartbeat_at":"2999-01-01T00:00:00"}', encoding="utf-8"
         )
@@ -1081,6 +1092,10 @@ class TestEventsHealth:
             ("scheduler", "green"),
             ("delivery", "green"),
             ("vault", "green"),
+            ("qq_transport", "green"),
+            ("qq_c2c", "green"),
+            ("qq_group", "green"),
+            ("qq_full_group", "green"),
         ]
 
     def test_health_returns_yellow_for_pending_delivery(self, wb, monkeypatch):
@@ -1089,6 +1104,7 @@ class TestEventsHealth:
         dashboard_dir.mkdir(parents=True)
         monkeypatch.setattr(api, "_DASHBOARD_DIR", str(dashboard_dir))
         monkeypatch.setattr(api, "get_vault", lambda: "D:/Obsidian")
+        monkeypatch.setattr(api, "_get_qq_health", self._healthy_qq)
         (plugin_root / "scheduler.lock").write_text(
             '{"heartbeat_at":"2999-01-01T00:00:00"}', encoding="utf-8"
         )
@@ -1109,6 +1125,7 @@ class TestEventsHealth:
         dashboard_dir.mkdir(parents=True)
         monkeypatch.setattr(api, "_DASHBOARD_DIR", str(dashboard_dir))
         monkeypatch.setattr(api, "get_vault", lambda: "D:/Obsidian")
+        monkeypatch.setattr(api, "_get_qq_health", self._healthy_qq)
         (plugin_root / "scheduler-state.json").write_text(
             '{"pending_delivery":null,"errors":{"count":0,"last":null}}',
             encoding="utf-8",
@@ -1119,6 +1136,43 @@ class TestEventsHealth:
         assert result["status"] == "red"
         assert result["label"] == "链路故障"
         assert next(c for c in result["checks"] if c["id"] == "scheduler")["status"] == "red"
+
+    def test_health_keeps_qq_transport_and_group_compatibility_separate(self, wb, monkeypatch):
+        plugin_root = wb / "plugin"
+        dashboard_dir = plugin_root / "dashboard"
+        dashboard_dir.mkdir(parents=True)
+        monkeypatch.setattr(api, "_DASHBOARD_DIR", str(dashboard_dir))
+        monkeypatch.setattr(api, "get_vault", lambda: "D:/Obsidian")
+        (plugin_root / "scheduler.lock").write_text(
+            '{"heartbeat_at":"2999-01-01T00:00:00"}', encoding="utf-8"
+        )
+        (plugin_root / "scheduler-state.json").write_text(
+            '{"pending_delivery":null,"errors":{"count":0,"last":null}}',
+            encoding="utf-8",
+        )
+        qq = {
+            "status": "yellow",
+            "transport": {"status": "green", "detail": "QQ WebSocket 已连接"},
+            "c2c": {"status": "green", "detail": "最近私聊摄取：2026-08-24 12:15:22"},
+            "group": {"status": "green", "detail": "最近群聊摄取：2026-08-24 14:08:36"},
+            "full_group": {
+                "status": "yellow",
+                "detail": "当前适配器仅确认群 @ 消息；普通群消息等待上游兼容",
+            },
+        }
+        monkeypatch.setattr(api, "_get_qq_health", lambda: qq, raising=False)
+
+        result = api.health()
+
+        assert result["qq"] == qq
+        assert result["status"] == "yellow"
+        assert result["label"] == "链路待观察"
+        assert [(c["id"], c["status"]) for c in result["checks"][-4:]] == [
+            ("qq_transport", "green"),
+            ("qq_c2c", "green"),
+            ("qq_group", "green"),
+            ("qq_full_group", "yellow"),
+        ]
 
     def test_events_websocket(self, wb, monkeypatch):
         """WS 事件通道：鉴权门 monkeypatch 后手工驱动推送循环——events 帧或 heartbeat 帧。"""
