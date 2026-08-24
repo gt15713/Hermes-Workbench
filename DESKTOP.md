@@ -13,7 +13,16 @@ Workbench 采用 Hermes 官方统一插件布局：Python 后端与桌面前端�
 node build-desktop.mjs
 ```
 
-构建器默认从 `HERMES_HOME/hermes-agent/node_modules/esbuild` 获取；如源码仓库迁移，先设置 `HERMES_AGENT_SOURCE` 指向 Hermes Agent 仓库根目录。
+开发依赖由 `desktop-src/package-lock.json` 锁定。首次构建先安装依赖：
+
+```powershell
+cd desktop-src
+npm ci
+cd ..
+node build-desktop.mjs
+```
+
+构建器优先使用 `HERMES_AGENT_SOURCE` 或 Hermes 源码树中已有的 `esbuild`，独立克隆环境则使用 `desktop-src/node_modules/esbuild`。因此 CI 和普通贡献者不依赖本机 Hermes 源码也能完成可重复构建。
 
 运行包只允许三个 Hermes 官方运行时导入：`@hermes/plugin-sdk`、`react`、`react/jsx-runtime`。构建脚本会在输出后强制检查。
 
