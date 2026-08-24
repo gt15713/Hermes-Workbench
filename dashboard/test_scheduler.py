@@ -114,6 +114,11 @@ class TestLease:
         """
         import os
 
+        import pytest
+
+        if os.name != "nt":
+            pytest.skip("Windows-only guard; POSIX os.kill(pid, 0) is read-only")
+
         monkeypatch.setattr(
             scheduler.os,
             "kill",
