@@ -14,6 +14,7 @@ P0 修复（2026-08-09 辩论收敛）：
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
 import re
@@ -39,6 +40,7 @@ from contract import (
     SCHEMA_VERSION,
 )
 from qq_health import assess_qq_health
+from qq_commands import parse_qq_command
 from repo import _repo as file_repo
 from wb_utils import (
     WORKBENCH_ROOT,
@@ -187,6 +189,21 @@ def _remove_done_index_entry(stem: str) -> None:
             i += 1
         _atomic_write(idx, "\n".join(out).strip("\n") + "\n")
         _log_action("移除已处理索引条目", f"「{stem}」reopen 回任务列表")
+
+
+def _find_archived_operation(done_dir: Path, slug: str, marker: str) -> Path | None:
+    """Find the exact archived effect of one QQ command, not a name lookalike."""
+    marker_line = f"qq_operation: {marker}"
+    for path in done_dir.glob("*.md"):
+        if path.stem != slug and not path.stem.startswith(slug + "-"):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if marker_line in text:
+            return path
+    return None
 
 
 
@@ -900,6 +917,9 @@ async def complete(body: dict) -> dict:
             else:
                 new_text = text
         today = _date.today().strftime("%Y-%m-%d")
+        operation_marker = str(body.get("operation_marker") or "")
+        if re.fullmatch(r"[0-9a-f]{32}", operation_marker):
+            new_text = _patch_frontmatter(new_text, {"qq_operation": operation_marker})
         new_text = _ensure_completed_at(new_text, today)
         new_text = _ensure_schema_version(new_text)
         if "## 完成记录" not in new_text:
@@ -1283,6 +1303,12 @@ async def ingest_message(body: dict) -> dict:
         return {"ok": True, "duplicate": True, "dir": dirname, "reason": f"链接已收录：{dup_url}"}
     category = (body.get("category") or "").strip()
     due = (body.get("due") or "").strip()
+    operation_marker = str(body.get("operation_marker") or "").strip()
+    marker_line = (
+        f"qq_operation: {operation_marker}\n"
+        if re.fullmatch(r"[0-9a-f]{32}", operation_marker)
+        else ""
+    )
     # Task 5.2 批次 5 补丁 10：priority 透传（P0-P3，大小写归一；非法忽略）
     priority = (body.get("priority") or "").strip().upper()
     if priority not in {"P0", "P1", "P2", "P3", ""}:
@@ -1305,7 +1331,7 @@ async def ingest_message(body: dict) -> dict:
             text = (
                 "---\n"
                 f"type: task\nstatus: todo\nschema_version: {SCHEMA_VERSION}\ncreated: {today} {ts}\nsource: qq\n{due_line}"
-                f"scope: {scope}\n"
+                f"scope: {scope}\n{marker_line}"
                 "---\n\n"
                 f"# {title}\n\n"
                 f"**QQ 收录：** {now:%Y-%m-%d %H:%M}\n"
@@ -1344,6 +1370,130 @@ async def ingest_message(body: dict) -> dict:
         file_repo.db.record_ingest_created(dirname, p.name, f"收录：{title}")
         _log_action(f"QQ 收录 → {dirname}", f"「{title}」")
         return {"ok": True, "duplicate": False, "file": p.name, "dir": dirname}
+
+
+async def qq_command(body: dict) -> dict:
+    """Execute an already-authorized QQ Workbench command.
+
+    This internal callable is deliberately not an HTTP route. Hermes must
+    authorize the sender before invoking it from a future post-auth plugin
+    hook and can deliver the returned short plain-text ``reply``.
+    """
+    command = parse_qq_command(str(body.get("text") or ""))
+    if command is None:
+        return {"ok": True, "handled": False}
+    if command.name == "invalid":
+        return {"ok": False, "handled": True, "error": "invalid command", "reply": command.error}
+
+    help_text = (
+        "Workbench 命令：\n"
+        "/wb 今日\n/wb 状态\n/wb 任务 <内容>\n"
+        "/wb 完成 <任务标题>\n/wb 归档 <任务标题>\n"
+        "/wb 延期 <任务标题> <YYYY-MM-DD>"
+    )
+    if command.name == "help":
+        return {"ok": True, "handled": True, "reply": help_text}
+    if command.name == "today":
+        data = board()
+        totals = data.get("totals", {})
+        return {
+            "ok": True,
+            "handled": True,
+            "reply": f"今日 Workbench：待处理 {totals.get('pending', 0)}，共 {totals.get('total', 0)} 项。",
+        }
+    if command.name == "health":
+        data = health()
+        verdict = data.get("status") or data.get("verdict") or "unknown"
+        return {"ok": True, "handled": True, "reply": f"Workbench 健康状态：{verdict}"}
+
+    message_id = str(body.get("message_id") or "").strip()
+    if not message_id:
+        return {
+            "ok": False,
+            "handled": True,
+            "error": "message_id required for mutation",
+            "reply": "未执行：缺少 QQ 消息 ID，无法保证幂等。",
+        }
+    operation_id = f"qq-command:{message_id[:200]}"
+    operation_marker = hashlib.sha256(operation_id.encode("utf-8")).hexdigest()[:32]
+    with _WRITE_LOCK:
+        claim_status = file_repo.db.ingest_status(operation_id)
+        if claim_status == "done":
+            return {"ok": True, "handled": True, "duplicate": True, "reply": "该命令已经处理。"}
+        recovering = claim_status == "processing"
+        if claim_status is None:
+            file_repo.db.ingest_upsert(operation_id, "command", "", "processing")
+
+        if command.name == "add":
+            result = await ingest_message(
+                {
+                    "message_id": operation_id,
+                    "dir": "任务",
+                    "title": command.argument[:80],
+                    "content": command.argument,
+                    "operation_marker": operation_marker,
+                }
+            )
+            if result.get("ok") and not result.get("duplicate"):
+                return {"ok": True, "handled": True, "reply": f"已创建任务：{command.argument[:80]}"}
+            expected = WORKBENCH_ROOT / "任务" / f"{_slugify(command.argument[:80])}.md"
+            if recovering and expected.is_file() and f"qq_operation: {operation_marker}" in expected.read_text(encoding="utf-8", errors="replace"):
+                file_repo.db.ingest_upsert(operation_id, "任务", expected.name, "done")
+                return {"ok": True, "handled": True, "duplicate": True, "reply": "该命令已经处理。"}
+        elif command.name in {"complete", "archive"}:
+            result = await complete(
+                {"title": command.argument, "operation_marker": operation_marker}
+            )
+            if result.get("ok"):
+                file_repo.db.ingest_upsert(operation_id, "已处理", result.get("archived_as", ""), "done")
+                return {"ok": True, "handled": True, "reply": f"已完成并归档：{command.argument}"}
+            slug = _slugify(command.argument)
+            archived = _find_archived_operation(
+                WORKBENCH_ROOT / "已处理", slug, operation_marker
+            )
+            if recovering and archived is not None:
+                file_repo.db.ingest_upsert(operation_id, "已处理", archived.name, "done")
+                return {"ok": True, "handled": True, "duplicate": True, "reply": "该命令已经处理。"}
+        elif command.name == "defer":
+            candidates = _match_task(command.argument)
+            if len(candidates) > 1:
+                result = {
+                    "ok": False,
+                    "error": "ambiguous",
+                    "candidates": [candidate.stem for candidate in candidates],
+                }
+            elif not candidates:
+                result = {"ok": False, "error": "task not found"}
+            else:
+                current = candidates[0].read_text(encoding="utf-8", errors="replace")
+                if recovering and f"qq_operation: {operation_marker}" in current:
+                    file_repo.db.ingest_upsert(operation_id, "任务", candidates[0].name, "done")
+                    return {"ok": True, "handled": True, "duplicate": True, "reply": "该命令已经处理。"}
+                result = await edit_entry(
+                    {
+                        "dir": "任务",
+                        "file": candidates[0].name,
+                        "due": command.extra,
+                        "operation_marker": operation_marker,
+                    }
+                )
+            if result.get("ok"):
+                file_repo.db.ingest_upsert(operation_id, "任务", result.get("file", ""), "done")
+                return {"ok": True, "handled": True, "reply": f"已延期至 {command.extra}：{command.argument}"}
+        else:
+            result = {"ok": False, "error": "unsupported command"}
+
+        # A normal error proves that this attempt did not mutate successfully.
+        # Keep ``processing`` only when an exception interrupts the call; that
+        # is the sole state eligible for filesystem-based crash recovery.
+        file_repo.db.ingest_release_processing(operation_id)
+
+    if result.get("error") == "ambiguous":
+        candidates = "、".join(result.get("candidates") or [])
+        reply = f"匹配到多个任务，请输入更完整标题：{candidates}"
+    else:
+        reply = f"未执行：{result.get('error') or '未知错误'}"
+    return {"ok": False, "handled": True, **result, "reply": reply}
 
 
 @router.post("/defer")
@@ -1651,6 +1801,10 @@ async def edit_entry(body: dict) -> dict:
                 changed = True
             if priority:
                 text = _patch_frontmatter(text, {"priority": priority})
+                changed = True
+            operation_marker = str(body.get("operation_marker") or "").strip()
+            if re.fullmatch(r"[0-9a-f]{32}", operation_marker):
+                text = _patch_frontmatter(text, {"qq_operation": operation_marker})
                 changed = True
 
         if not changed:

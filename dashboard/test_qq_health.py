@@ -100,3 +100,54 @@ def test_disconnected_transport_is_red_even_when_old_messages_exist(tmp_path):
         "status": "yellow",
         "detail": "适配器声明支持普通群消息，但尚无事件级运行证据",
     }
+
+
+def test_full_group_turns_green_from_explicit_recent_event_evidence(tmp_path):
+    state_path = tmp_path / "gateway_state.json"
+    log_path = tmp_path / "gateway.log"
+    adapter_path = tmp_path / "adapter.py"
+    _write_state(state_path, {"platforms": {"qqbot": {"state": "connected"}}})
+    log_path.write_text(
+        "2026-08-24 14:08:36,518 INFO workbench-view: "
+        "workbench qq event received type=GROUP_MESSAGE_CREATE\n",
+        encoding="utf-8",
+    )
+    adapter_path.write_text('"GROUP_MESSAGE_CREATE"', encoding="utf-8")
+
+    result = assess_qq_health(
+        state_path=state_path,
+        log_path=log_path,
+        adapter_path=adapter_path,
+        now=datetime(2026, 8, 24, 14, 10, 0),
+        recent_hours=24,
+    )
+
+    assert result["full_group"] == {
+        "status": "green",
+        "detail": "最近普通群消息摄取：2026-08-24 14:08:36",
+    }
+
+
+def test_full_group_ignores_expired_and_future_event_evidence(tmp_path):
+    state_path = tmp_path / "gateway_state.json"
+    log_path = tmp_path / "gateway.log"
+    adapter_path = tmp_path / "adapter.py"
+    _write_state(state_path, {"platforms": {"qqbot": {"state": "connected"}}})
+    log_path.write_text(
+        "2026-08-20 14:08:36,518 INFO workbench-view: "
+        "workbench qq event received type=GROUP_MESSAGE_CREATE\n"
+        "2026-08-24 14:20:00,000 INFO workbench-view: "
+        "workbench qq event received type=GROUP_MESSAGE_CREATE\n",
+        encoding="utf-8",
+    )
+    adapter_path.write_text('"GROUP_MESSAGE_CREATE"\n"GROUP_MESSAGE_CREATE"', encoding="utf-8")
+
+    result = assess_qq_health(
+        state_path=state_path,
+        log_path=log_path,
+        adapter_path=adapter_path,
+        now=datetime(2026, 8, 24, 14, 10, 0),
+        recent_hours=24,
+    )
+
+    assert result["full_group"]["status"] == "yellow"

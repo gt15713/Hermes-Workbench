@@ -75,6 +75,15 @@ git clone https://github.com/gt15713/Hermes-Workbench.git workbench-view
 
 “机器人可获取群内全部消息”是 QQ 开放平台侧的授权能力，不等于 Hermes 当前适配器已经把每种事件交给 Workbench。Workbench 只根据实际收到的事件显示健康状态，不会仅凭配置或源码声明显示绿色。
 
+### Workbench 命令接口
+
+后端提供仅供宿主授权后调用的内部 QQ 命令契约：`/wb 帮助`、`/wb 今日`、`/wb 状态`、
+`/wb 任务`、`/wb 完成`、`/wb 归档` 和 `/wb 延期`。写命令必须携带 QQ 官方消息 ID
+以保证幂等；任务标题存在歧义时不会自动选择。
+
+该函数不暴露为 HTTP 路由，也不会在 `pre_gateway_dispatch` 中执行，因为 Hermes 的这个
+Hook 位于发送者授权之前。接线要求见 [QQ Workbench 命令接线契约](docs/qq-workbench-command-wiring.md)。
+
 ## 任务生命周期
 
 ```text

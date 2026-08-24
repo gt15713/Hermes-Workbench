@@ -610,6 +610,32 @@ class SqliteRepo(WorkbenchRepo):
                 conn.close()
         return row is not None and row["status"] == "done"
 
+    def ingest_status(self, message_id: str) -> str | None:
+        """Return the durable claim state used to recover interrupted commands."""
+        with self._lock:
+            conn = _db_connect(self.db_path)
+            try:
+                row = conn.execute(
+                    "SELECT status FROM ingest_messages WHERE message_id=?",
+                    (message_id,),
+                ).fetchone()
+            finally:
+                conn.close()
+        return str(row["status"]) if row is not None else None
+
+    def ingest_release_processing(self, message_id: str) -> None:
+        """Release a claim after a handled, deterministic failure."""
+        with self._lock:
+            conn = _db_connect(self.db_path)
+            try:
+                conn.execute(
+                    "DELETE FROM ingest_messages WHERE message_id=? AND status='processing'",
+                    (message_id,),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
     def agent_ingest_count(self, day: str) -> int:
         """C3（P1-1）：Agent 源每日 ingest 计数（message_id `agent-` 前缀；Business Rule 4.8 上限 20 条）。"""
         with self._lock:

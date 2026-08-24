@@ -9,6 +9,7 @@
 
 运行：cd dashboard && python -m pytest test_plugin_api.py -v
 """
+import asyncio
 import sys
 from pathlib import Path
 
@@ -1047,6 +1048,175 @@ class TestToTaskPsych:
         r = asyncio.run(api.ingest_message({"dir": "待验证", "title": "无ID"}))
         assert r["ok"] is False
         assert "message_id" in r["error"]
+
+
+class TestQQCommand:
+    def test_archived_operation_search_checks_all_same_name_candidates(self, wb):
+        _write(wb / "已处理" / "同名.md", "---\nstatus: completed\n---\n")
+        _write(
+            wb / "已处理" / "同名-新.md",
+            "---\nstatus: completed\nqq_operation: abcdef0123456789abcdef0123456789\n---\n",
+        )
+
+        found = api._find_archived_operation(
+            wb / "已处理", "同名", "abcdef0123456789abcdef0123456789"
+        )
+
+        assert found is not None
+        assert found.name == "同名-新.md"
+
+    def test_command_handler_is_not_exposed_as_public_http_route(self, wb):
+        paths = {getattr(route, "path", "") for route in api.router.routes}
+        assert "/qq-command" not in paths
+
+    def test_help_is_plain_text_and_requires_no_message_id(self, wb):
+        r = asyncio.run(api.qq_command({"text": "/wb 帮助"}))
+
+        assert r["ok"] is True
+        assert r["handled"] is True
+        assert "/wb 任务" in r["reply"]
+
+    def test_mutation_requires_official_message_id(self, wb):
+        r = asyncio.run(api.qq_command({"text": "/wb 任务 整理发布说明"}))
+
+        assert r == {
+            "ok": False,
+            "handled": True,
+            "error": "message_id required for mutation",
+            "reply": "未执行：缺少 QQ 消息 ID，无法保证幂等。",
+        }
+
+    def test_add_is_idempotent_by_official_message_id(self, wb):
+        body = {"text": "/wb 任务 整理发布说明", "message_id": "qq-msg-1"}
+
+        first = asyncio.run(api.qq_command(body))
+        second = asyncio.run(api.qq_command(body))
+
+        assert first["ok"] is True
+        assert first["reply"] == "已创建任务：整理发布说明"
+        assert second["ok"] is True
+        assert second["duplicate"] is True
+        assert len(list((wb / "任务").glob("*.md"))) == 1
+
+    def test_complete_archives_unique_task(self, wb):
+        _write(
+            wb / "任务" / "修复健康检查.md",
+            "---\ntype: task\nstatus: todo\n---\n\n# 修复健康检查\n",
+        )
+
+        r = asyncio.run(
+            api.qq_command({"text": "/wb 完成 修复健康检查", "message_id": "qq-msg-2"})
+        )
+
+        assert r["ok"] is True
+        assert r["reply"] == "已完成并归档：修复健康检查"
+        assert not (wb / "任务" / "修复健康检查.md").exists()
+        assert (wb / "已处理" / "修复健康检查.md").exists()
+
+    def test_complete_recovers_when_done_marker_failed_after_archive(self, wb, monkeypatch):
+        _write(
+            wb / "任务" / "恢复幂等标记.md",
+            "---\ntype: task\nstatus: todo\n---\n\n# 恢复幂等标记\n",
+        )
+        original = api.file_repo.db.ingest_upsert
+        failed = False
+
+        def fail_first_done(message_id, partition, filename, status):
+            nonlocal failed
+            if message_id == "qq-command:qq-crash-1" and status == "done" and not failed:
+                failed = True
+                raise OSError("simulated marker failure")
+            return original(message_id, partition, filename, status)
+
+        monkeypatch.setattr(api.file_repo.db, "ingest_upsert", fail_first_done)
+        body = {"text": "/wb 完成 恢复幂等标记", "message_id": "qq-crash-1"}
+
+        with pytest.raises(OSError, match="simulated marker failure"):
+            asyncio.run(api.qq_command(body))
+        replay = asyncio.run(api.qq_command(body))
+
+        assert replay["ok"] is True
+        assert replay["duplicate"] is True
+        assert len(list((wb / "已处理").glob("恢复幂等标记*.md"))) == 1
+
+    def test_complete_recovery_finds_marker_past_old_same_name_archive(self, wb, monkeypatch):
+        _write(
+            wb / "已处理" / "同名碰撞.md",
+            "---\ntype: task\nstatus: completed\n---\n\n# 旧的同名碰撞\n",
+        )
+        _write(
+            wb / "任务" / "同名碰撞.md",
+            "---\ntype: task\nstatus: todo\n---\n\n# 同名碰撞\n",
+        )
+        original = api.file_repo.db.ingest_upsert
+        failed = False
+
+        def fail_first_done(message_id, partition, filename, status):
+            nonlocal failed
+            if message_id == "qq-command:qq-collision" and status == "done" and not failed:
+                failed = True
+                raise OSError("simulated marker failure")
+            return original(message_id, partition, filename, status)
+
+        monkeypatch.setattr(api.file_repo.db, "ingest_upsert", fail_first_done)
+        body = {"text": "/wb 完成 同名碰撞", "message_id": "qq-collision"}
+
+        with pytest.raises(OSError, match="simulated marker failure"):
+            asyncio.run(api.qq_command(body))
+        replay = asyncio.run(api.qq_command(body))
+
+        assert replay["ok"] is True
+        assert replay["duplicate"] is True
+        assert len(list((wb / "已处理").glob("同名碰撞*.md"))) == 2
+
+    def test_deterministic_failure_releases_claim_and_never_uses_old_archive(self, wb):
+        _write(
+            wb / "已处理" / "旧归档.md",
+            "---\ntype: task\nstatus: completed\n---\n\n# 旧归档\n",
+        )
+        body = {"text": "/wb 完成 旧归档", "message_id": "qq-not-found-1"}
+
+        first = asyncio.run(api.qq_command(body))
+        second = asyncio.run(api.qq_command(body))
+
+        assert first["ok"] is False
+        assert second["ok"] is False
+        assert second.get("duplicate") is not True
+        assert api.file_repo.db.ingest_status("qq-command:qq-not-found-1") is None
+
+    def test_pre_mutation_processing_claim_does_not_adopt_old_archive(self, wb):
+        _write(
+            wb / "已处理" / "历史同名.md",
+            "---\ntype: task\nstatus: completed\n---\n\n# 历史同名\n",
+        )
+        api.file_repo.db.ingest_upsert(
+            "qq-command:qq-before-mutation", "command", "", "processing"
+        )
+
+        replay = asyncio.run(
+            api.qq_command(
+                {"text": "/wb 完成 历史同名", "message_id": "qq-before-mutation"}
+            )
+        )
+
+        assert replay["ok"] is False
+        assert replay.get("duplicate") is not True
+
+    def test_defer_sets_explicit_due_date_on_unique_task(self, wb):
+        _write(
+            wb / "任务" / "编写发布说明.md",
+            "---\ntype: task\nstatus: todo\ndue: 2026-08-25\n---\n\n# 编写发布说明\n",
+        )
+
+        r = asyncio.run(
+            api.qq_command(
+                {"text": "/wb 延期 编写发布说明 2026-08-30", "message_id": "qq-msg-3"}
+            )
+        )
+
+        assert r["ok"] is True
+        assert r["reply"] == "已延期至 2026-08-30：编写发布说明"
+        assert "due: 2026-08-30" in (wb / "任务" / "编写发布说明.md").read_text(encoding="utf-8")
 
     def test_ingest_task_dir(self, wb):
         """任务目录 → 独立文件（source: qq）。"""
