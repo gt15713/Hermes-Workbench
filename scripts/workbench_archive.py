@@ -20,6 +20,9 @@ import sys
 from datetime import date, datetime
 from pathlib import Path
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "dashboard"))
 from workbench_config import get_root  # noqa: E402
 

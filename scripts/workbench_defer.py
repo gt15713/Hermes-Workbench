@@ -14,6 +14,9 @@ import re
 import sys
 from pathlib import Path
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+
 # P0-A：env 注入优先；手动运行回落中立默认
 ROOT = Path(os.environ.get("WORKBENCH_ROOT", str(Path.home() / "Workbench"))) / "任务"
 TODAY = datetime.date.today()
