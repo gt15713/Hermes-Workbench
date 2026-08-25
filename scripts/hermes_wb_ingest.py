@@ -44,6 +44,7 @@ def main() -> int:
     ap.add_argument("--category", default="", help="分类（可选）")
     ap.add_argument("--due", default="", help="任务截止日期 YYYY-MM-DD（可选）")
     ap.add_argument("--priority", default="", help="P0/P1/P2/P3（可选，仅任务）")
+    ap.add_argument("--platform", default="qqbot", choices=("qqbot", "weixin"), help="消息来源")
     args = ap.parse_args()
 
     if args.dir not in DIR_WHITELIST:
@@ -66,6 +67,7 @@ def main() -> int:
         "category": args.category,
         "due": args.due,
         "priority": args.priority,
+        "platform": args.platform,
     }
     try:
         result = asyncio.run(plugin_api.ingest_message(body))

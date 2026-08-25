@@ -277,6 +277,7 @@ def _parse_md(path: Path) -> dict:
         "type": str(fm.get("type", "")),
         "category": str(fm.get("category", "")),
         "status": str(fm.get("status", "")),
+        "task_id": str(fm.get("task_id", "")).strip().upper(),
         "execution_result": str(fm.get("execution_result", "")),
         "received_at": str(fm.get("received_at", "")),
         "due": str(fm.get("due", "")),

@@ -2,10 +2,20 @@
  * Workbench drawer — file content preview + run history tabs.
  * Task 5.2 批次 1: adds "运行历史" tab reading task_events via /recent?dir=&file=.
  */
-import { Button, cn, host, useQuery } from '@hermes/plugin-sdk'
+import { Button, cn, host, useMutation, useQuery } from '@hermes/plugin-sdk'
 import { useState } from 'react'
-import { fetchFile, fetchRecentEvents, FILE_KEY, RECENT_EVENTS_KEY } from './api'
+import { bindSession, CONTENT_ITEM_KEY, executeTask, fetchContentItem, fetchFile, fetchRecentEvents, FILE_KEY, invalidateBoard, RECENT_EVENTS_KEY, resetExecution, reviewContent } from './api'
+import { contentReviewModel, launchQueuedContentItem, type WbContentReviewAction } from './content-review'
+import type { WorkbenchExecutionDeps } from './execution'
 import type { WbCard } from './types'
+
+const contentExecutionDeps: WorkbenchExecutionDeps = {
+  prepare: input => executeTask(input.dir, input.file, { launch: false }),
+  createSession: input => host.request('session.create', input),
+  bind: bindSession,
+  submit: (sessionId, text) => host.request('prompt.submit', { session_id: sessionId, text }),
+  rollback: (dir, file, reason) => resetExecution(dir, file, reason),
+}
 
 
 // 2026-08-21：预览过滤 frontmatter 块（type/schema_version/category/status/received_at/source
@@ -66,6 +76,7 @@ export function WbPreviewDrawer({
   onClose: () => void
 }) {
   const [tab, setTab] = useState<'preview' | 'history'>('preview')
+  const isReviewedContent = card.dir === '待验证' && card.file.startsWith('content-') && !card.entry_title
 
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: FILE_KEY(card.dir, card.file),
@@ -79,6 +90,53 @@ export function WbPreviewDrawer({
     queryFn: () => fetchRecentEvents(card.dir, card.file),
     enabled: tab === 'history',
     retry: 1,
+  })
+
+  const { data: contentResponse, refetch: refetchContent } = useQuery({
+    queryKey: CONTENT_ITEM_KEY(card.dir, card.file),
+    queryFn: () => fetchContentItem(card.dir, card.file),
+    enabled: isReviewedContent,
+    retry: 1,
+  })
+  const contentItem = contentResponse?.ok ? contentResponse.item : undefined
+  const reviewModel = contentItem ? contentReviewModel(contentItem) : null
+  const reviewMutation = useMutation({
+    mutationFn: (action: WbContentReviewAction) => reviewContent(contentItem!.dir, contentItem!.file, action),
+    onSuccess: async (result) => {
+      if (!result.ok) {
+        host.notify({ kind: 'error', message: result.error || '操作失败，可重试' })
+        await refetchContent()
+        return
+      }
+      if (result.item?.review_state === 'sink_queued') {
+        const launched = await launchQueuedContentItem(result.item, contentExecutionDeps)
+        if (!launched.ok) {
+          host.notify({ kind: 'error', message: launched.error || '摄入任务启动失败；任务已保留，可重试' })
+          invalidateBoard()
+          await refetchContent()
+          return
+        }
+        host.notify({ kind: 'success', message: '已交给 Hermes 摄入；完成后自动回写笔记路径' })
+        invalidateBoard()
+        await refetchContent()
+        return
+      }
+      host.notify({ kind: 'success', message: result.item?.review_state === 'sunk' ? '已沉淀到 Obsidian' : '已归档' })
+      invalidateBoard()
+      await refetchContent()
+    },
+    onError: (error) => host.notify({ kind: 'error', message: String((error as Error).message || '操作失败，可重试') }),
+  })
+  const queuedLaunchMutation = useMutation({
+    mutationFn: () => launchQueuedContentItem(contentItem!, contentExecutionDeps),
+    onSuccess: async (launched) => {
+      host.notify(launched.ok
+        ? { kind: 'success', message: 'Hermes 摄入任务已启动；完成后自动回写笔记路径' }
+        : { kind: 'error', message: launched.error || '摄入任务启动失败；可再次重试' })
+      invalidateBoard()
+      await refetchContent()
+    },
+    onError: (error) => host.notify({ kind: 'error', message: String((error as Error).message || '摄入任务启动失败；可再次重试') }),
   })
 
   const tabBtn = (active: boolean) =>
@@ -130,7 +188,40 @@ export function WbPreviewDrawer({
 
         {/* Tab content */}
         {tab === 'preview' ? (
-          <div className="flex-1 overflow-y-auto whitespace-pre-wrap text-[0.75rem] leading-relaxed">
+          <div className="flex-1 overflow-y-auto text-[0.75rem] leading-relaxed">
+            {reviewModel && contentItem && (
+              <section className="mb-3 rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-secondary) p-3">
+                <div className="font-medium">内容审核 · {reviewModel.statusText}</div>
+                {contentItem.original_url && (
+                  <div className="mt-1 break-all text-(--ui-text-tertiary)">来源：{contentItem.original_url}</div>
+                )}
+                {reviewModel.error && <div className="mt-1 text-(--ui-text-danger)">{reviewModel.error}</div>}
+                {reviewModel.notePath && <div className="mt-1 break-all text-(--ui-text-secondary)">笔记：{reviewModel.notePath}</div>}
+                {reviewModel.actions.length > 0 && (
+                  <div className="mt-3 flex gap-2">
+                    {reviewModel.actions.map((action) => (
+                      <Button
+                        key={action.id}
+                        size="xs"
+                        variant={action.id === 'archive_only' ? 'outline' : 'secondary'}
+                        disabled={reviewMutation.isPending || queuedLaunchMutation.isPending}
+                        onClick={() => {
+                          if (action.id === 'launch_sink_task') {
+                            queuedLaunchMutation.mutate()
+                            return
+                          }
+                          if (action.id === 'sink_to_obsidian' && !window.confirm('确认将这条已审核内容沉淀到 Obsidian？')) return
+                          reviewMutation.mutate(action.id)
+                        }}
+                      >
+                        {action.label}
+                      </Button>
+                    ))}
+                  </div>
+                )}
+              </section>
+            )}
+            <div className="whitespace-pre-wrap">
             {isLoading && (
               <div className="flex h-full items-center justify-center text-(--ui-text-tertiary)">加载中…</div>
             )}
@@ -141,6 +232,7 @@ export function WbPreviewDrawer({
               </div>
             )}
             {data && <PreviewBody content={data.content || '（空）'} focusTitle={card.entry_title || null} />}
+            </div>
           </div>
         ) : (
           <div className="flex-1 overflow-y-auto text-[0.8125rem]">

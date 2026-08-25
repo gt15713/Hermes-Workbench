@@ -6,9 +6,9 @@ sender authorization before a parsed command is passed to a Workbench action.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date
-import re
 
 
 @dataclass(frozen=True)
@@ -30,6 +30,19 @@ _ALIASES = {
     "状态": "health",
     "add": "add",
     "任务": "add",
+    "review": "review",
+    "待回看": "review",
+    "verify": "verify",
+    "待验证": "verify",
+    "note": "note",
+    "随想": "note",
+    "show": "show",
+    "查看": "show",
+    "continue": "append",
+    "append": "append",
+    "继续": "append",
+    "reopen": "reopen",
+    "重开": "reopen",
     "done": "complete",
     "complete": "complete",
     "完成": "complete",
@@ -44,6 +57,12 @@ _ARG_LABELS = {
     "complete": "完成命令需要任务标题",
     "archive": "归档命令需要任务标题",
     "defer": "延期命令需要任务标题和 YYYY-MM-DD 日期",
+    "review": "待回看命令需要内容或链接",
+    "verify": "待验证命令需要内容",
+    "note": "随想命令需要内容",
+    "show": "查看命令需要任务编号或标题",
+    "append": "继续命令需要任务编号和补充内容",
+    "reopen": "重开命令需要任务编号或标题",
 }
 
 
@@ -77,4 +96,11 @@ def parse_qq_command(text: str) -> QQCommand | None:
         except ValueError:
             return QQCommand("invalid", error=_ARG_LABELS[name])
         return QQCommand(name, task.strip(), due, True)
+    if name == "append":
+        task_ref, separator, note = remainder.partition(" ")
+        if not separator or not task_ref.strip() or not note.strip():
+            return QQCommand("invalid", error=_ARG_LABELS[name])
+        return QQCommand(name, task_ref.strip(), note.strip(), True)
+    if name == "show":
+        return QQCommand(name, remainder, mutating=False)
     return QQCommand(name, remainder, mutating=True)

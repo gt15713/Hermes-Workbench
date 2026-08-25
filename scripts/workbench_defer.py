@@ -24,6 +24,7 @@ _dual = None
 try:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "dashboard"))
     from repo import DualRepo, FileRepo, SqliteRepo  # noqa: E402
+    from conversation_sync import sync_by_task_text  # noqa: E402
 
     _dual = DualRepo(FileRepo(root=ROOT.parent), SqliteRepo(root=ROOT.parent))
 except Exception as _e:  # noqa: BLE001
@@ -72,6 +73,7 @@ def main():
             if new_text != text:
                 if _dual is not None:
                     _dual.write_text(f, new_text)
+                    sync_by_task_text(_dual.db.db_path, new_text, status="todo")
                 else:
                     f.write_text(new_text, encoding="utf-8")
                 deferred.append((f.stem, str(due), str(TOMORROW)))

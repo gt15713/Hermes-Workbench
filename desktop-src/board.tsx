@@ -43,6 +43,7 @@ import {
   executeTask,
   fetchBoard,
   fetchBrief,
+  fetchConversations,
   fetchFile,
   fetchHealth,
   fetchSearch,
@@ -63,6 +64,7 @@ import { suggestTags, type TagSuggestion } from './tag-suggest'
 import type { WbBriefCard } from './api'
 import { WbPreviewDrawer } from './drawer'
 import { TableBoardView, ViewSwitcher } from './views'
+import { ConversationIndexView } from './conversations'
 
 const executionDeps: WorkbenchExecutionDeps = {
   prepare: async input => {
@@ -115,7 +117,7 @@ class CardErrorBoundary extends Component<{ children: ReactNode }, { error: unkn
 
 // ── Card component ────────────────────────────────────────────────────
 
-function WbCardView({ card, sectionKey, onPreview, openMenuKey, onMenuOpenChange, multiMode, selected, onToggleSelect }: {
+function WbCardView({ card, sectionKey, onPreview, openMenuKey, onMenuOpenChange, multiMode, selected, onToggleSelect, conversationPlatforms, onOpenConversations }: {
   card: WbCard
   sectionKey: string
   onPreview: (c: WbCard) => void
@@ -124,6 +126,8 @@ function WbCardView({ card, sectionKey, onPreview, openMenuKey, onMenuOpenChange
   multiMode: boolean
   selected: Set<string>
   onToggleSelect: (key: string) => void
+  conversationPlatforms: string[]
+  onOpenConversations: () => void
 }) {
   const meta = partitionMeta(sectionKey)
   const tone = STATUS_TONE[card.status] || 'var(--ui-text-tertiary)'
@@ -353,6 +357,16 @@ function WbCardView({ card, sectionKey, onPreview, openMenuKey, onMenuOpenChange
           </span>
         )}
         {card.status === 'in_progress' && card.session_id && <span>· ▶ 执行中</span>}
+        {conversationPlatforms.length > 0 && (
+          <button
+            type="button"
+            className="ml-auto rounded bg-(--ui-accent)/10 px-1.5 py-0.5 text-(--ui-accent) hover:bg-(--ui-accent)/20"
+            title="查看消息任务"
+            onClick={(event) => { event.stopPropagation(); onOpenConversations() }}
+          >
+            {conversationPlatforms.map(platform => platform === 'qq' ? 'QQ' : platform === 'weixin' ? '微信' : '消息').join(' · ')}
+          </button>
+        )}
       </div>
 
       {/* Phase 0-2：常态主按钮（替代 B1 hover 快捷层；多选模式隐藏；低频动作进 ⋮ 菜单） */}
@@ -516,7 +530,7 @@ function MenuBtn({ icon, label, onClick }: { icon: string; label: string; onClic
 
 // ── Section (column) ──────────────────────────────────────────────────
 
-function WbSectionView({ section, onPreview, openMenuKey, onMenuOpenChange, multiMode, selected, onToggleSelect }: {
+function WbSectionView({ section, onPreview, openMenuKey, onMenuOpenChange, multiMode, selected, onToggleSelect, conversationPlatformsByTask, onOpenConversations }: {
   section: WbSection
   onPreview: (c: WbCard) => void
   openMenuKey: string | null
@@ -524,6 +538,8 @@ function WbSectionView({ section, onPreview, openMenuKey, onMenuOpenChange, mult
   multiMode: boolean
   selected: Set<string>
   onToggleSelect: (key: string) => void
+  conversationPlatformsByTask: Map<string, string[]>
+  onOpenConversations: () => void
 }) {
   const meta = partitionMeta(section.key)
   const label = section.label ?? meta.label
@@ -587,7 +603,7 @@ function WbSectionView({ section, onPreview, openMenuKey, onMenuOpenChange, mult
 
   // 2026-08-22（已拍板等宽）：所有分区默认展开为等宽列（w-[16rem]），
   // 不再按分区/空内容自动折叠成窄轨；手动折叠仍可用（collapsedOverride 优先）。
-  const collapsed = collapsedOverride ?? false
+  const collapsed = collapsedOverride ?? filtered.length === 0
 
   const toggleCollapse = () => {
     const current = $collapsedSections.get()
@@ -662,6 +678,8 @@ function WbSectionView({ section, onPreview, openMenuKey, onMenuOpenChange, mult
                 multiMode={multiMode}
                 selected={selected}
                 onToggleSelect={onToggleSelect}
+                conversationPlatforms={card.task_id ? (conversationPlatformsByTask.get(card.task_id) ?? []) : []}
+                onOpenConversations={onOpenConversations}
               />
             </CardErrorBoundary>
           ))}
@@ -1375,6 +1393,16 @@ export function WorkbenchBoardPage() {
   }, [showHealthDetails])
   // P0-3：链路健康 + 投递配置 + 到期筛选（hooks 无条件在顶部）
   const health = useQuery({ queryKey: ['workbench', 'health'], queryFn: fetchHealth, refetchInterval: 30_000 })
+  const conversations = useQuery({ queryKey: ['workbench', 'conversations'], queryFn: fetchConversations, refetchInterval: 30_000 })
+  const conversationPlatformsByTask = useMemo(() => {
+    const grouped = new Map<string, Set<string>>()
+    for (const item of conversations.data?.items ?? []) {
+      const platforms = grouped.get(item.task_id) ?? new Set<string>()
+      platforms.add(item.platform)
+      grouped.set(item.task_id, platforms)
+    }
+    return new Map(Array.from(grouped, ([taskId, platforms]) => [taskId, Array.from(platforms).sort()]))
+  }, [conversations.data?.items])
   const settings = useQuery({ queryKey: ['workbench', 'settings'], queryFn: fetchSettings })
   const dueFilter = useValue($dueFilter)
   const [bannerDismissedDate, setBannerDismissedDate] = useState(
@@ -1382,6 +1410,7 @@ export function WorkbenchBoardPage() {
   )
   // P0-1（B4）：今日视图 = 默认首页（不新增路由；看板态可切回）
   const [showToday, setShowToday] = useState(true)
+  const [showConversations, setShowConversations] = useState(false)
   // P0-1：待确认 badge = 待验证分区条目数（点击 → 看板并展开 thought 分区）
   const thoughtSection = board?.sections.find(s => s.key === 'thought')
   const pendingCount = thoughtSection
@@ -1531,9 +1560,9 @@ export function WorkbenchBoardPage() {
             type="button"
             className={cn(
               'rounded px-2 py-0.5 text-[0.8125rem] transition-colors',
-              showToday ? 'bg-(--ui-accent) text-white' : 'text-(--ui-text-tertiary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-text-primary)'
+              showToday && !showConversations ? 'bg-(--ui-accent) text-white' : 'text-(--ui-text-tertiary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-text-primary)'
             )}
-            onClick={() => setShowToday(true)}
+            onClick={() => { setShowToday(true); setShowConversations(false) }}
           >
             今日
           </button>
@@ -1541,11 +1570,21 @@ export function WorkbenchBoardPage() {
             type="button"
             className={cn(
               'rounded px-2 py-0.5 text-[0.8125rem] transition-colors',
-              !showToday ? 'bg-(--ui-accent) text-white' : 'text-(--ui-text-tertiary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-text-primary)'
+              !showToday && !showConversations ? 'bg-(--ui-accent) text-white' : 'text-(--ui-text-tertiary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-text-primary)'
             )}
-            onClick={() => setShowToday(false)}
+            onClick={() => { setShowToday(false); setShowConversations(false) }}
           >
             看板
+          </button>
+          <button
+            type="button"
+            className={cn(
+              'rounded px-2 py-0.5 text-[0.8125rem] transition-colors',
+              showConversations ? 'bg-(--ui-accent) text-white' : 'text-(--ui-text-tertiary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-text-primary)'
+            )}
+            onClick={() => { setShowToday(false); setShowConversations(true) }}
+          >
+            消息任务
           </button>
         </div>
         <span className="text-[0.75rem] text-(--ui-text-quaternary)">
@@ -1712,7 +1751,13 @@ export function WorkbenchBoardPage() {
       )}
 
       {/* P0-1（B4）：今日视图 = 默认首页；看板/表格 = 看板态 */}
-      {showToday ? (
+      {showConversations ? (
+        <ConversationIndexView
+          items={conversations.data?.items ?? []}
+          loading={conversations.isLoading}
+          error={conversations.error}
+        />
+      ) : showToday ? (
         <TodayView board={board} onPreview={setPreviewCard} onGoBoard={() => setShowToday(false)} />
       ) : (
         <>
@@ -1730,6 +1775,8 @@ export function WorkbenchBoardPage() {
                   multiMode={multiMode}
                   selected={selected}
                   onToggleSelect={toggleSelect}
+                  conversationPlatformsByTask={conversationPlatformsByTask}
+                  onOpenConversations={() => { setShowToday(false); setShowConversations(true) }}
                 />
               ))}
             </div>

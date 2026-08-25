@@ -6,7 +6,9 @@
  */
 
 import { atom, type PluginRestOptions, type PluginStorage, queryClient } from '@hermes/plugin-sdk'
-import type { WbBoard, WbEvent, WbSearchResponse, WbSettings, WbSettingsResponse } from './types'
+import type { WbBoard, WbConversationRef, WbEvent, WbSearchResponse, WbSettings, WbSettingsResponse } from './types'
+import type { WbContentItem } from './content-review'
+import { withTimeout } from './request'
 
 type Rest = <T>(path: string, opts?: PluginRestOptions) => Promise<T>
 type Socket = (path: string, onMessage: (data: unknown) => void) => () => void
@@ -102,22 +104,39 @@ function call<T>(path: string, opts?: PluginRestOptions): Promise<T> {
 export const BOARD_KEY = ['workbench', 'board'] as const
 export const FILE_KEY = (dir: string, file: string) => ['workbench', 'file', dir, file] as const
 export const RECENT_EVENTS_KEY = (dir: string, file: string) => ['workbench', 'events', dir, file] as const
+export const CONTENT_ITEM_KEY = (dir: string, file: string) => ['workbench', 'content-item', dir, file] as const
 
 // ── reads ────────────────────────────────────────────────────────────
 
 export const fetchBoard = () => call<WbBoard>('/board')
 
+export const fetchConversations = () =>
+  call<{ ok: boolean; items: WbConversationRef[] }>('/conversations')
+
 export const fetchFile = (dir: string, file: string) =>
-  call<{ content: string }>(
-    `/file?dirname=${encodeURIComponent(dir)}&filename=${encodeURIComponent(file)}`,
-    { timeoutMs: 15_000 }
+  withTimeout(
+    call<{ content: string }>(
+      `/file?dirname=${encodeURIComponent(dir)}&filename=${encodeURIComponent(file)}`,
+      { timeoutMs: 15_000 }
+    ),
+    15_000,
+    '任务详情加载'
+  )
+
+export const fetchContentItem = (dir: string, file: string) =>
+  call<WbContentItemResponse>(
+    `/content/item?dir=${encodeURIComponent(dir)}&file=${encodeURIComponent(file)}`
   )
 
 /** Task 5.2 批次 1：运行历史（复用 /recent，dir+file 时后端查 task_events 倒序） */
 export const fetchRecentEvents = (dir: string, file: string) =>
-  call<{ entries: WbEvent[]; source?: string }>(
-    `/recent?limit=50&dir=${encodeURIComponent(dir)}&file=${encodeURIComponent(file)}`,
-    { timeoutMs: 15_000 }
+  withTimeout(
+    call<{ entries: WbEvent[]; source?: string }>(
+      `/recent?limit=50&dir=${encodeURIComponent(dir)}&file=${encodeURIComponent(file)}`,
+      { timeoutMs: 15_000 }
+    ),
+    15_000,
+    '运行历史加载'
   )
 
 /** A4：全局搜索（标题/内容/标签；tag 可选过滤）。 */
@@ -186,6 +205,31 @@ export const ingestMessage = (
   call<{ ok: boolean; duplicate?: boolean; file?: string; dir?: string; error?: string }>('/ingest-message', {
     method: 'POST',
     body: { message_id, dir, title, ...opts },
+  })
+
+export interface WbContentCaptureInput {
+  source_id: string
+  source_url: string
+  original_text: string
+  title: string
+}
+
+export interface WbContentItemResponse {
+  ok: boolean
+  duplicate?: boolean
+  item?: WbContentItem
+  error?: string
+}
+
+/** Capture is only an inbox write. It never implies archive or knowledge ingestion. */
+export const captureContent = (body: WbContentCaptureInput) =>
+  call<WbContentItemResponse>('/content/capture', { method: 'POST', body })
+
+/** A separate reviewed action is required before archive or Obsidian ingestion. */
+export const reviewContent = (dir: string, file: string, action: 'archive_only' | 'sink_to_obsidian') =>
+  call<WbContentItemResponse>('/content/review', {
+    method: 'POST',
+    body: { dir, file, action },
   })
 
 // ── writes ───────────────────────────────────────────────────────────

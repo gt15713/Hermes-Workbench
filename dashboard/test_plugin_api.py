@@ -10,6 +10,7 @@
 运行：cd dashboard && python -m pytest test_plugin_api.py -v
 """
 import asyncio
+import re
 import sys
 from pathlib import Path
 
@@ -50,6 +51,157 @@ def _write(path: Path, text: str, encoding: str = "utf-8", newline: str = ""):
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding=encoding, newline=newline) as f:
         f.write(text)
+
+
+def _seed_authorized_conversation(task_id: str):
+    from conversation_index import ConversationIndex
+
+    index = ConversationIndex(api.file_repo.db.db_path)
+    index.upsert_authorized(
+        platform="qqbot",
+        message_id=f"private-{task_id}",
+        summary="生命周期同步测试",
+        task_id=task_id,
+        status="active",
+    )
+    return index
+
+
+class TestReviewedContentInboxApi:
+    def test_content_sink_boundary_is_explicitly_bound(self):
+        assert callable(api.CONTENT_INGESTION_SINK)
+
+    def test_content_capture_and_get_contract(self, wb):
+        captured = asyncio.run(
+            api.content_capture(
+                {
+                    "source_id": "qqbot:authorized-user",
+                    "source_url": "https://example.com/read?id=4&utm_source=qq#x",
+                    "original_text": "原文",
+                    "title": "待复核文章",
+                }
+            )
+        )
+
+        assert captured["ok"] is True
+        assert set(("original_url", "canonical_url", "extraction_state", "review_state", "note_path", "last_error")) <= captured["item"].keys()
+        loaded = api.content_item(
+            dir=captured["item"]["dir"], file=captured["item"]["file"]
+        )
+        assert loaded == {"ok": True, "item": captured["item"]}
+
+    def test_content_review_archive_only_contract(self, wb):
+        captured = asyncio.run(
+            api.content_capture(
+                {
+                    "source_id": "weixin:authorized-user",
+                    "source_url": "https://example.com/archive",
+                    "original_text": "原文",
+                    "title": "仅归档",
+                }
+            )
+        )["item"]
+
+        reviewed = asyncio.run(
+            api.content_review(
+                {"dir": captured["dir"], "file": captured["file"], "action": "archive_only"}
+            )
+        )
+
+        assert reviewed["ok"] is True
+        assert reviewed["item"]["review_state"] == "archived"
+        assert reviewed["item"]["dir"] == "已处理"
+
+    def test_content_review_uses_injected_sink_boundary(self, wb, monkeypatch):
+        captured = asyncio.run(
+            api.content_capture(
+                {
+                    "source_id": "qqbot:authorized-user",
+                    "source_url": "https://example.com/sink",
+                    "original_text": "原文",
+                    "title": "送入笔记",
+                }
+            )
+        )["item"]
+        monkeypatch.setattr(
+            api,
+            "CONTENT_INGESTION_SINK",
+            lambda item: {
+                "ok": True,
+                "status": "queued",
+                "task_id": "WB-INJECTED",
+                "task_dir": "任务",
+                "task_file": "content-ingest-injected.md",
+                "task_path": "D:/vault/任务/content-ingest-injected.md",
+            },
+        )
+
+        reviewed = asyncio.run(
+            api.content_review(
+                {
+                    "dir": captured["dir"],
+                    "file": captured["file"],
+                    "action": "sink_to_obsidian",
+                }
+            )
+        )
+
+        assert reviewed["ok"] is True
+        assert reviewed["item"]["review_state"] == "sink_queued"
+        assert reviewed["item"]["note_path"] == ""
+
+    def test_default_review_creates_one_deterministic_agent_ingest_task(self, wb):
+        captured = asyncio.run(
+            api.content_capture(
+                {
+                    "source_id": "qqbot:authorized-user",
+                    "source_url": "https://example.com/agent-ingest",
+                    "original_text": "原文",
+                    "title": "Agent 摄入",
+                }
+            )
+        )["item"]
+
+        first = asyncio.run(api.content_review({
+            "dir": captured["dir"], "file": captured["file"], "action": "sink_to_obsidian",
+        }))
+        second = asyncio.run(api.content_review({
+            "dir": captured["dir"], "file": captured["file"], "action": "sink_to_obsidian",
+        }))
+
+        assert first["ok"] is True
+        assert first["item"]["review_state"] == "sink_queued"
+        assert first["item"]["note_path"] == ""
+        assert second["item"]["sink_task_id"] == first["item"]["sink_task_id"]
+        tasks = list((wb / "任务").glob("*.md"))
+        assert len(tasks) == 1
+        task_text = tasks[0].read_text(encoding="utf-8")
+        assert "scope: ingest" in task_text
+        assert f"content_capture_id: {captured['capture_id']}" in task_text
+        assert "obsidian-zh-ingest" in task_text
+
+    def test_content_sink_receipt_requires_bound_task_and_real_note_path(self, wb):
+        captured = asyncio.run(api.content_capture({
+            "source_id": "weixin:authorized-user",
+            "source_url": "https://example.com/receipt",
+            "original_text": "原文",
+            "title": "回执验证",
+        }))["item"]
+        queued = asyncio.run(api.content_review({
+            "dir": captured["dir"], "file": captured["file"], "action": "sink_to_obsidian",
+        }))["item"]
+
+        wrong = asyncio.run(api.content_sink_receipt({
+            "capture_id": captured["capture_id"], "task_id": "WB-DEADBEEF", "note_path": "AI工具/错误.md",
+        }))
+        done = asyncio.run(api.content_sink_receipt({
+            "capture_id": captured["capture_id"], "task_id": queued["sink_task_id"], "note_path": "AI工具/回执验证.md",
+        }))
+
+        assert wrong == {"ok": False, "error": "sink task mismatch"}
+        assert done["ok"] is True
+        assert done["item"]["review_state"] == "sunk"
+        assert done["item"]["dir"] == "已处理"
 
 
 # ---------- _parse_md ----------
@@ -705,12 +857,204 @@ class TestFrontmatterAndBinding:
         assert out.startswith("---")
         assert "session_id: sess-2" in out
 
+    def test_bind_session_updates_all_authorized_conversation_refs_by_task_id(self, wb):
+        from conversation_index import ConversationIndex
+
+        p = wb / "任务" / "bind-index.md"
+        _write(
+            p,
+            "---\ntype: task\nstatus: in_progress\ntask_id: WB-AABBCCDD\n---\n\n# 绑定索引\n",
+        )
+        index = ConversationIndex(api.file_repo.db.db_path)
+        for platform, message_id in (("qqbot", "qq-private-id"), ("weixin", "wx-private-id")):
+            index.upsert_authorized(
+                platform=platform,
+                message_id=message_id,
+                summary="同一个跨平台任务",
+                task_id="WB-AABBCCDD",
+                status="active",
+            )
+
+        result = asyncio.run(
+            api.bind_session(
+                {"dir": "任务", "file": "bind-index.md", "session_id": "sess-shared"}
+            )
+        )
+
+        assert result["ok"] is True
+        rows = index.list_conversations()
+        assert len(rows) == 2
+        assert {row["session_id"] for row in rows} == {"sess-shared"}
+        assert {row["resume_mode"] for row in rows} == {"original"}
+
     def test_bind_session_without_frontmatter_fails(self, wb):
         import asyncio
         p = wb / "任务" / "plain.md"
         _write(p, "# 无 frontmatter\n")
         r = asyncio.run(api.bind_session({"dir": "任务", "file": "plain.md", "session_id": "sess-3"}))
         assert r.get("ok") is False
+
+    def test_conversation_index_failure_does_not_block_session_binding(
+        self, wb, monkeypatch
+    ):
+        from conversation_index import ConversationIndex
+
+        p = wb / "任务" / "bind-with-index-failure.md"
+        _write(
+            p,
+            "---\ntype: task\nstatus: in_progress\ntask_id: WB-AABBCCDE\n---\n\n# 绑定\n",
+        )
+
+        def fail_index_update(self, task_id, **changes):
+            raise OSError("isolated index failure")
+
+        monkeypatch.setattr(ConversationIndex, "update_by_task_id", fail_index_update)
+
+        result = asyncio.run(
+            api.bind_session(
+                {"dir": "任务", "file": p.name, "session_id": "sess-still-bound"}
+            )
+        )
+
+        assert result["ok"] is True
+        assert "session_id: sess-still-bound" in p.read_text(encoding="utf-8")
+
+
+class TestConversationLifecycleSync:
+    def test_execute_updates_authorized_conversation_to_in_progress(self, wb):
+        p = wb / "任务" / "execute-index.md"
+        _write(p, "---\ntype: task\nstatus: todo\ntask_id: WB-10000001\n---\n\n# 执行\n")
+        index = _seed_authorized_conversation("WB-10000001")
+
+        result = asyncio.run(
+            api.execute_task({"dir": "任务", "file": p.name, "launch": False})
+        )
+
+        assert result["ok"] is True
+        assert index.list_conversations()[0]["status"] == "in_progress"
+
+    def test_complete_updates_authorized_conversation_to_completed(self, wb):
+        p = wb / "任务" / "complete-index.md"
+        _write(p, "---\ntype: task\nstatus: todo\ntask_id: WB-10000002\n---\n\n# 完成\n")
+        index = _seed_authorized_conversation("WB-10000002")
+
+        result = asyncio.run(api.complete({"dir": "任务", "file": p.name}))
+
+        assert result["ok"] is True
+        assert index.list_conversations()[0]["status"] == "completed"
+
+    def test_abandon_updates_authorized_conversation_to_abandoned(self, wb):
+        p = wb / "任务" / "abandon-index.md"
+        _write(p, "---\ntype: task\nstatus: todo\ntask_id: WB-10000003\n---\n\n# 放弃\n")
+        index = _seed_authorized_conversation("WB-10000003")
+
+        result = asyncio.run(api.abandon({"dir": "任务", "file": p.name}))
+
+        assert result["ok"] is True
+        assert index.list_conversations()[0]["status"] == "abandoned"
+
+    def test_reopen_updates_authorized_conversation_to_todo(self, wb):
+        p = wb / "任务" / "reopen-index.md"
+        _write(
+            p,
+            "---\ntype: task\nstatus: abandoned\ntask_id: WB-10000004\n---\n\n# 重开\n",
+        )
+        index = _seed_authorized_conversation("WB-10000004")
+
+        result = asyncio.run(api.reopen({"dir": "任务", "file": p.name}))
+
+        assert result["ok"] is True
+        assert index.list_conversations()[0]["status"] == "todo"
+
+    def test_defer_updates_authorized_conversation_to_todo(self, wb):
+        p = wb / "任务" / "defer-index.md"
+        _write(
+            p,
+            "---\ntype: task\nstatus: todo\ntask_id: WB-10000005\ndue: 2000-01-01\n---\n\n# 顺延\n",
+        )
+        index = _seed_authorized_conversation("WB-10000005")
+
+        result = asyncio.run(api.defer_task({"dir": "任务", "file": p.name}))
+
+        assert result["ok"] is True
+        assert index.list_conversations()[0]["status"] == "todo"
+
+    def test_conversation_index_failure_does_not_block_task_completion(
+        self, wb, monkeypatch
+    ):
+        from conversation_index import ConversationIndex
+
+        p = wb / "任务" / "complete-with-index-failure.md"
+        _write(p, "---\ntype: task\nstatus: todo\ntask_id: WB-10000006\n---\n\n# 完成\n")
+
+        def fail_index_update(self, task_id, **changes):
+            raise OSError("isolated index failure")
+
+        monkeypatch.setattr(ConversationIndex, "update_by_task_id", fail_index_update)
+
+        result = asyncio.run(api.complete({"dir": "任务", "file": p.name}))
+
+        assert result["ok"] is True
+        assert not p.exists()
+        assert (wb / "已处理" / p.name).is_file()
+
+    def test_trash_marks_authorized_conversation_as_trashed(self, wb):
+        p = wb / "任务" / "trash-index.md"
+        _write(p, "---\ntype: task\nstatus: todo\ntask_id: WB-10000007\n---\n\n# 回收\n")
+        index = _seed_authorized_conversation("WB-10000007")
+
+        result = asyncio.run(api.trash({"dir": "任务", "file": p.name}))
+
+        assert result["ok"] is True
+        assert index.list_conversations()[0]["status"] == "trashed"
+
+    def test_restore_recovers_authorized_conversation_to_file_status(self, wb):
+        p = wb / "回收站" / "restore-index.md"
+        _write(
+            p,
+            "---\ntype: task\nstatus: abandoned\ntask_id: WB-10000008\norigin: 任务/restore-index.md\n---\n\n# 还原\n",
+        )
+        index = _seed_authorized_conversation("WB-10000008")
+        index.update_by_task_id("WB-10000008", status="abandoned")
+
+        result = asyncio.run(api.restore({"file": p.name}))
+
+        assert result["ok"] is True
+        assert index.list_conversations()[0]["status"] == "todo"
+
+    def test_permanent_delete_marks_authorized_conversation_as_deleted(self, wb):
+        p = wb / "已处理" / "delete-index.md"
+        _write(
+            p,
+            "---\ntype: task\nstatus: completed\ntask_id: WB-10000009\n---\n\n# 永久删除\n",
+        )
+        index = _seed_authorized_conversation("WB-10000009")
+
+        result = asyncio.run(api.delete_file({"dir": "已处理", "file": p.name}))
+
+        assert result["ok"] is True
+        assert index.list_conversations()[0]["status"] == "deleted"
+
+    def test_reset_execution_restores_todo_and_clears_orphan_session(self, wb):
+        p = wb / "任务" / "reset-index.md"
+        _write(
+            p,
+            "---\ntype: task\nstatus: in_progress\ntask_id: WB-1000000A\nsession_id: orphan-session\nexecution_result: pending\n---\n\n# 复位\n",
+        )
+        index = _seed_authorized_conversation("WB-1000000A")
+        index.update_by_task_id(
+            "WB-1000000A", status="in_progress", session_id="orphan-session"
+        )
+
+        result = asyncio.run(
+            api.reset_execution({"dir": "任务", "file": p.name, "reason": "启动失败"})
+        )
+
+        assert result["ok"] is True
+        row = index.list_conversations()[0]
+        assert row["status"] == "todo"
+        assert row["session_id"] is None
+        assert row["resume_mode"] == "summary"
 
 
 # ---------- 阶段 0 新测试：闭环四件套 ----------
@@ -758,6 +1102,22 @@ class TestStage0CompleteFourPiece:
         # 第二次 complete 应失败（文件已不在任务区）
         r2 = asyncio.run(api.complete({"dir": "任务", "file": "stage0-double.md"}))
         assert r2.get("ok") is False
+
+    def test_complete_preserves_full_history_under_archived_location(self, wb):
+        """归档卡片应能从新位置读取归档前后的完整活动链。"""
+        import asyncio
+
+        p = wb / "任务" / "history-after-archive.md"
+        api.file_repo.write_text(p, "---\ntype: task\nstatus: todo\n---\n\n# 归档历史\n")
+        before = api.file_repo.db.list_file_events("任务", p.name, limit=50)
+        assert any(event["kind"] == "created" for event in before)
+
+        result = asyncio.run(api.complete({"dir": "任务", "file": p.name}))
+        archived_name = result["archived_as"]
+        history = api.recent(limit=50, dir="已处理", file=archived_name)["entries"]
+
+        assert any(event["kind"] == "created" for event in history)
+        assert any(event["kind"] == "moved" for event in history)
 
 
 # ---------- 阶段 0 新测试：时区边界 ----------
@@ -1051,6 +1411,110 @@ class TestToTaskPsych:
 
 
 class TestQQCommand:
+    def test_conversations_lists_authorized_index_without_raw_identity(self, wb):
+        from conversation_index import ConversationIndex
+
+        ConversationIndex(api.file_repo.db.db_path).upsert_authorized(
+            platform="weixin",
+            message_id="private-platform-id",
+            summary="待学习视频",
+            task_id="WB-11223344",
+            status="active",
+        )
+
+        result = api.conversations()
+
+        assert result["ok"] is True
+        assert result["items"][0]["platform"] == "weixin"
+        assert result["items"][0]["task_id"] == "WB-11223344"
+        assert "private-platform-id" not in str(result)
+
+    def test_task_ingest_returns_stable_public_id_and_bounded_source(self, wb):
+        body = {
+            "message_id": "qqbot:message-1",
+            "platform": "qqbot",
+            "dir": "任务",
+            "title": "跨平台任务",
+            "content": "从 QQ 私聊登记",
+        }
+
+        first = asyncio.run(api.ingest_message(body))
+        duplicate = asyncio.run(api.ingest_message(body))
+
+        assert first["task_id"] == "WB-53A6C804"
+        assert duplicate["task_id"] == "WB-53A6C804"
+        text = (wb / "任务" / "跨平台任务.md").read_text(encoding="utf-8")
+        assert "task_id: WB-53A6C804" in text
+        assert "source: qq" in text
+        assert "qqbot:message-1" not in text
+
+    def test_same_task_routes_across_qq_and_weixin_by_task_id(self, wb):
+        created = asyncio.run(
+            api.qq_command(
+                {
+                    "text": "/wb 任务 评估跨平台收录",
+                    "message_id": "qqbot:create-cross-platform",
+                    "platform": "qqbot",
+                }
+            )
+        )
+        task_id = created["task_id"]
+
+        shown = asyncio.run(
+            api.qq_command({"text": f"/wb 查看 {task_id}", "platform": "weixin"})
+        )
+        appended = asyncio.run(
+            api.qq_command(
+                {
+                    "text": f"/wb 继续 {task_id} 微信侧验证通过",
+                    "message_id": "weixin:append-cross-platform",
+                    "platform": "weixin",
+                }
+            )
+        )
+        appended_again = asyncio.run(
+            api.qq_command(
+                {
+                    "text": f"/wb 继续 {task_id} 微信侧第二条",
+                    "message_id": "weixin:append-cross-platform-2",
+                    "platform": "weixin",
+                }
+            )
+        )
+        completed = asyncio.run(
+            api.qq_command(
+                {
+                    "text": f"/wb 完成 {task_id}",
+                    "message_id": "qqbot:complete-cross-platform",
+                    "platform": "qqbot",
+                }
+            )
+        )
+
+        assert shown["ok"] is True and "评估跨平台收录" in shown["reply"]
+        assert appended["ok"] is True
+        assert appended_again["ok"] is True
+        archived = wb / "已处理" / "评估跨平台收录.md"
+        assert completed["ok"] is True and archived.exists()
+        archived_text = archived.read_text(encoding="utf-8")
+        assert "微信侧验证通过" in archived_text
+        assert "来源：weixin" in archived_text
+        assert "微信侧第二条" in archived_text
+        assert archived_text.count("## 执行记录") == 1
+        append_events = api.file_repo.db.list_file_events(
+            "已处理", archived.name, limit=20
+        )
+        assert any(
+            event["kind"] == "updated"
+            and event["payload"] == "weixin 续接：微信侧验证通过"
+            for event in append_events
+        )
+        assert any(
+            event["kind"] == "updated"
+            and event["payload"] == "weixin 续接：微信侧第二条"
+            for event in append_events
+        )
+
     def test_archived_operation_search_checks_all_same_name_candidates(self, wb):
         _write(wb / "已处理" / "同名.md", "---\nstatus: completed\n---\n")
         _write(
@@ -1093,7 +1557,7 @@ class TestQQCommand:
         second = asyncio.run(api.qq_command(body))
 
         assert first["ok"] is True
-        assert first["reply"] == "已创建任务：整理发布说明"
+        assert first["reply"] == "已创建任务 WB-494A6D10：整理发布说明"
         assert second["ok"] is True
         assert second["duplicate"] is True
         assert len(list((wb / "任务").glob("*.md"))) == 1
@@ -1229,6 +1693,88 @@ class TestQQCommand:
         assert f.exists()
         text = f.read_text(encoding="utf-8")
         assert "source: qq" in text
+
+    def test_archived_title_and_frontmatter_only_id_routing(self, wb):
+        _write(
+            wb / "已处理" / "已归档标题.md",
+            "---\ntype: task\nstatus: completed\ntask_id: WB-12345678\n---\n\n# 已归档标题\n\ntask_id: WB-DEADBEEF\n",
+        )
+
+        by_title = asyncio.run(api.qq_command({"text": "/wb 查看 已归档标题"}))
+        injected = asyncio.run(api.qq_command({"text": "/wb 查看 WB-DEADBEEF"}))
+
+        assert by_title["ok"] is True
+        assert injected["ok"] is False
+
+    def test_aggregate_capture_recovers_after_done_marker_failure(self, wb, monkeypatch):
+        original = api.file_repo.db.ingest_upsert
+        failed = False
+
+        def fail_first_done(message_id, partition, filename, status):
+            nonlocal failed
+            if message_id == "qq-command:aggregate-crash" and status == "done" and not failed:
+                failed = True
+                raise OSError("simulated marker failure")
+            return original(message_id, partition, filename, status)
+
+        monkeypatch.setattr(api.file_repo.db, "ingest_upsert", fail_first_done)
+        body = {"text": "/wb 待验证 崩溃恢复不重复", "message_id": "aggregate-crash"}
+        with pytest.raises(OSError, match="simulated marker failure"):
+            asyncio.run(api.qq_command(body))
+        written = next((wb / "待验证").glob("*.md"))
+        written.rename(wb / "待验证" / "2026-08-23.md")
+        replay = asyncio.run(api.qq_command(body))
+        aggregate = next((wb / "待验证").glob("*.md"))
+
+        assert replay.get("duplicate") is True
+        assert aggregate.read_text(encoding="utf-8").count("## 崩溃恢复不重复") == 1
+
+    def test_reopen_recovers_after_done_marker_failure(self, wb, monkeypatch):
+        _write(
+            wb / "已处理" / "重开崩溃.md",
+            "---\ntype: task\nstatus: completed\ntask_id: WB-87654321\n---\n\n# 重开崩溃\n",
+        )
+        original = api.file_repo.db.ingest_upsert
+        failed = False
+
+        def fail_first_done(message_id, partition, filename, status):
+            nonlocal failed
+            if message_id == "qq-command:reopen-crash" and status == "done" and not failed:
+                failed = True
+                raise OSError("simulated marker failure")
+            return original(message_id, partition, filename, status)
+
+        monkeypatch.setattr(api.file_repo.db, "ingest_upsert", fail_first_done)
+        body = {"text": "/wb 重开 WB-87654321", "message_id": "reopen-crash"}
+        with pytest.raises(OSError, match="simulated marker failure"):
+            asyncio.run(api.qq_command(body))
+        replay = asyncio.run(api.qq_command(body))
+
+        assert replay.get("duplicate") is True
+        assert len(list((wb / "任务").glob("重开崩溃*.md"))) == 1
+
+    def test_reopen_abandoned_recovers_after_done_marker_failure(self, wb, monkeypatch):
+        _write(
+            wb / "任务" / "放弃后重开.md",
+            "---\ntype: task\nstatus: abandoned\ntask_id: WB-AABBCCDD\n---\n\n# 放弃后重开\n",
+        )
+        original = api.file_repo.db.ingest_upsert
+        failed = False
+
+        def fail_first_done(message_id, partition, filename, status):
+            nonlocal failed
+            if message_id == "qq-command:reopen-abandoned" and status == "done" and not failed:
+                failed = True
+                raise OSError("simulated marker failure")
+            return original(message_id, partition, filename, status)
+
+        monkeypatch.setattr(api.file_repo.db, "ingest_upsert", fail_first_done)
+        body = {"text": "/wb 重开 WB-AABBCCDD", "message_id": "reopen-abandoned"}
+        with pytest.raises(OSError, match="simulated marker failure"):
+            asyncio.run(api.qq_command(body))
+        replay = asyncio.run(api.qq_command(body))
+
+        assert replay.get("duplicate") is True
 
 
 class TestEventsHealth:
@@ -1532,6 +2078,35 @@ class TestA1A2EntryExecuteAndEdit:
         assert r.get("task_dir") == "任务"
         assert (wb / "任务" / r["task_file"]).exists()
 
+    def test_to_task_persists_public_task_id_and_can_resolve_it(self, wb):
+        p = wb / "待验证" / "task-id-source.md"
+        _write(p, "---\ntype: queued\nstatus: pending\n---\n\n# 聚合\n\n## 可续接任务\n\n- 内容\n")
+
+        result = asyncio.run(
+            api.to_task(
+                {"dir": "待验证", "file": p.name, "entry_title": "可续接任务"}
+            )
+        )
+
+        assert result["ok"] is True
+        assert re.fullmatch(r"WB-[0-9A-F]{8}", result["task_id"])
+        task_path = wb / "任务" / result["task_file"]
+        assert f"task_id: {result['task_id']}" in task_path.read_text(encoding="utf-8")
+        assert api._match_task_ref(result["task_id"]) == [task_path]
+
+    def test_to_task_file_returns_same_complete_task_identity_contract(self, wb):
+        p = wb / "待回看" / "file-source.md"
+        _write(p, "---\ntype: queued\nstatus: pending\n---\n\n# 文件转任务\n\n正文\n")
+
+        result = asyncio.run(api.to_task({"dir": "待回看", "file": p.name}))
+
+        assert result["ok"] is True
+        assert result["task_dir"] == "任务"
+        assert result["task_file"] == "file-source.md"
+        assert re.fullmatch(r"WB-[0-9A-F]{8}", result["task_id"])
+        task_path = wb / "任务" / result["task_file"]
+        assert f"task_id: {result['task_id']}" in task_path.read_text(encoding="utf-8")
+
     def test_edit_entry_renames_section(self, wb):
         """A2：条目级 /edit 重命名 ## 小节 + 追加备注 + frontmatter due。"""
         import asyncio
@@ -1583,6 +2158,15 @@ class TestAddTaskPriority:
         assert "priority: P1" in text
         assert "due: 2026-08-20" in text
         assert "status: todo" in text
+
+    def test_add_task_persists_and_returns_public_task_id(self, wb):
+        result = asyncio.run(api.add_entry({"dir": "任务", "title": "手动任务身份"}))
+
+        assert result["ok"] is True
+        assert re.fullmatch(r"WB-[0-9A-F]{8}", result["task_id"])
+        task_path = wb / "任务" / result["file"]
+        assert f"task_id: {result['task_id']}" in task_path.read_text(encoding="utf-8")
+        assert api._match_task_ref(result["task_id"]) == [task_path]
 
     def test_add_task_priority_normalized_and_invalid_ignored(self, wb):
         import asyncio

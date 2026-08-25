@@ -18,7 +18,7 @@ Workbench 负责 **登记、展示、提醒、状态协调与归档**；任务�
 
 ## 主要功能
 
-- QQ 私聊或群聊消息自动收录，链接、任务和想法按规则进入对应分区；
+- QQ、微信私聊或 QQ 群聊消息收录，链接、任务和想法按规则进入对应分区；
 - 看板与 Table 两种视图，支持搜索、标签和到期筛选；
 - 待验证、待回看、任务、已处理、回收站及自定义分区；
 - 运行历史、最近执行结果、失败原因和投递状态可见；
@@ -77,17 +77,19 @@ git clone https://github.com/gt15713/Hermes-Workbench.git workbench-view
 
 ### Workbench 命令接口
 
-后端提供仅供宿主授权后调用的内部 QQ 命令契约：`/wb 帮助`、`/wb 今日`、`/wb 状态`、
-`/wb 任务`、`/wb 完成`、`/wb 归档` 和 `/wb 延期`。写命令必须携带 QQ 官方消息 ID
-以保证幂等；任务标题存在歧义时不会自动选择。
+插件通过 Hermes 官方 `register_command` 注册授权后的 `/wb` 命令，QQ 私聊、QQ 群和微信
+私聊共用：`帮助`、`今日`、`状态`、`任务`、`待回看`、`待验证`、`随想`、`查看`、`继续`、
+`完成`、`归档`、`重开` 和 `延期`。创建任务会返回稳定的 `WB-XXXXXXXX` 编号，换 QQ 账号
+或切到微信后可用同一编号继续，不需要合并 Hermes 会话。完整用法见
+[QQ 与微信私聊收录](docs/multiplatform-private-capture.md)。
 
-该函数不暴露为 HTTP 路由，也不会在 `pre_gateway_dispatch` 中执行，因为 Hermes 的这个
-Hook 位于发送者授权之前。接线要求见 [QQ Workbench 命令接线契约](docs/qq-workbench-command-wiring.md)。
+底层写接口仍不暴露为公共 HTTP 路由，也不会在授权前的 `pre_gateway_dispatch` Hook 中执行。
+命令使用会话作用域指纹保证幂等；任务标题存在歧义时不会自动选择。
 
 ## 任务生命周期
 
 ```text
-QQ/手工收录
+QQ/微信/手工收录
     ↓
 待验证 / 待回看 / 任务
     ↓

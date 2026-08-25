@@ -80,6 +80,13 @@ def _on_pre_gateway_dispatch(**kwargs) -> None:
     platform_value = getattr(platform, "value", platform)
     # P0-B：hook 触发信号（无内容，防隐私泄漏；文本不进日志）
     _log.info("workbench hook fired platform=%s", platform_value)
+    from messaging_command import remember_inbound_command
+
+    remember_inbound_command(
+        getattr(event, "text", ""),
+        getattr(event, "message_id", ""),
+        str(platform_value or "messaging"),
+    )
     if platform_value != "qqbot":
         return None
     _log.info("workbench qq event received type=%s", _event_type_from_event(event))

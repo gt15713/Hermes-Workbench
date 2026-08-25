@@ -18,20 +18,19 @@ import hashlib
 import logging
 import os
 import re
+import sys as _sys
+import threading
+import time
+import uuid
+from datetime import datetime
+from pathlib import Path
+
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 # P0 修复（2026-08-14）：web_server 用 spec_from_file_location 单文件加载插件
 # api 文件，不把 dashboard 目录加入 sys.path——同目录模块（contract/repo/wb_utils）
 # 必须由本文件显式插入（对齐 scripts/workbench_db_migrate.py 的做法）。
-import sys as _sys
-import threading
-import time
-from datetime import datetime
-from pathlib import Path
-from pathlib import Path as _Path
-
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-
-_DASHBOARD_DIR = str(_Path(__file__).resolve().parent)
+_DASHBOARD_DIR = str(Path(__file__).resolve().parent)
 if _DASHBOARD_DIR not in _sys.path:
     _sys.path.insert(0, _DASHBOARD_DIR)
 
@@ -39,8 +38,14 @@ from contract import (
     PARTITIONS,
     SCHEMA_VERSION,
 )
-from qq_health import assess_qq_health
+from content_capture import (
+    capture_content as _capture_reviewed_content,
+    complete_content_sink as _complete_content_sink,
+    get_content_item as _get_reviewed_content,
+    review_content as _review_content,
+)
 from qq_commands import parse_qq_command
+from qq_health import assess_qq_health
 from repo import _repo as file_repo
 from wb_utils import (
     WORKBENCH_ROOT,
@@ -79,13 +84,65 @@ from workbench_config import (
 router = APIRouter()
 _log = logging.getLogger("workbench-view")
 
+def _queue_content_ingestion_sink(item: dict) -> dict:
+    """Create one deterministic Hermes task; the Agent writes Obsidian later."""
+    capture_id = str(item.get("capture_id") or "").strip()
+    if not re.fullmatch(r"[0-9a-f]{16}", capture_id):
+        return {"ok": False, "error": "invalid content capture id"}
+    task_id = f"WB-{capture_id[:8].upper()}"
+    task_file = f"content-ingest-{capture_id}.md"
+    task_path = file_repo.partition_dir("任务") / task_file
+    if task_path.exists():
+        existing = task_path.read_text(encoding="utf-8", errors="replace")
+        if f"task_id: {task_id}" not in existing or f"content_capture_id: {capture_id}" not in existing:
+            return {"ok": False, "error": "content ingestion task collision"}
+    else:
+        today = datetime.now().strftime("%Y-%m-%d")
+        title = str(item.get("title") or "待复核内容").strip()
+        source_url = str(item.get("original_url") or "").strip()
+        original_text = str(item.get("original_text") or "").strip()
+        task_text = (
+            "---\n"
+            "type: task\nstatus: todo\n"
+            f"task_id: {task_id}\nschema_version: {SCHEMA_VERSION}\ncreated: {today}\n"
+            "source: workbench-content\nscope: ingest\n"
+            f"content_capture_id: {capture_id}\n"
+            "---\n\n"
+            f"# 摄入：{title}\n\n"
+            "## 已授权摄入对象\n\n"
+            f"- 来源：{source_url}\n"
+            f"- Workbench capture：{capture_id}\n\n"
+            f"## 原始内容\n\n{original_text or '（需按来源提取正文）'}\n\n"
+            "## 执行契约\n\n"
+            "1. 严格执行 `obsidian-zh-ingest`，不得绕过其模板、归域和校验闸门。\n"
+            "2. 成功后必须获得真实 vault-relative note_path；失败时不得声称已入库。\n"
+            "3. 成功后执行：`python C:/Users/Kayura/AppData/Local/hermes/plugins/workbench-view/scripts/hermes_wb_content_receipt.py "
+            f"--capture-id {capture_id} --task-id {task_id} --note-path \"<真实 vault-relative 路径>\"`。\n"
+            "4. 失败后执行同一脚本并把 `--note-path` 改为 `--error \"<失败原因>\"`。\n"
+        )
+        file_repo.write_text(task_path, task_text)
+        file_repo.event("任务", task_file, "content_ingest_task_created", f"摄入任务：{task_id}")
+    return {
+        "ok": True,
+        "status": "queued",
+        "task_id": task_id,
+        "task_dir": "任务",
+        "task_file": task_file,
+        "task_path": str(task_path),
+    }
+
+
+# Review-before-write boundary.  The plugin host may replace this callable
+# with an authorized Obsidian adapter; capture itself never calls it.
+CONTENT_INGESTION_SINK = _queue_content_ingestion_sink
+
 
 def _get_qq_health() -> dict:
     """Read QQ runtime evidence without opening a second connection or exposing identifiers."""
     hermes_home = Path(
         os.environ.get(
             "HERMES_HOME",
-            str(_Path(__file__).resolve().parent.parent.parent.parent),
+            str(Path(__file__).resolve().parent.parent.parent.parent),
         )
     )
     return assess_qq_health(
@@ -103,7 +160,7 @@ DIRS = list(PARTITIONS)
 
 # 08-21 研究≠摄入治理（B3）：research 任务会话的工作目录（默认落盘位置，读取不受限）
 RESEARCH_CWD = (
-    Path(os.environ.get("HERMES_HOME", str(_Path(__file__).resolve().parent.parent.parent.parent)))
+    Path(os.environ.get("HERMES_HOME", str(Path(__file__).resolve().parent.parent.parent.parent)))
     / "cache"
     / "workbench-research"
 )
@@ -132,6 +189,90 @@ def _log_action(action, detail):
 def _append_log(log_path, section_title, entry):
     """归档索引日志：经 FileRepo（去重）。"""
     file_repo.append_done_log(log_path, section_title, entry)
+
+
+def _append_execution_record(text: str, record: str) -> str:
+    """Append one record under a single stable execution-history section."""
+    heading = re.search(r"(?m)^## 执行记录\s*$", text)
+    line = f"- {record}"
+    if heading is None:
+        return text.rstrip() + f"\n\n## 执行记录\n\n{line}\n"
+    tail = text[heading.end():]
+    next_heading = re.search(r"(?m)^## ", tail)
+    insert_at = heading.end() + (next_heading.start() if next_heading else len(tail))
+    before = text[:insert_at].rstrip()
+    after = text[insert_at:].lstrip("\n")
+    return before + f"\n\n{line}\n" + (f"\n{after}" if after else "")
+
+
+def _task_id_for_message(message_id: str) -> str:
+    """Return a stable, public task reference without exposing platform IDs."""
+    digest = hashlib.sha256(str(message_id).encode("utf-8")).hexdigest()[:8].upper()
+    return f"WB-{digest}"
+
+
+def _new_task_id() -> str:
+    """Return a public random task reference for tasks without message identity."""
+    return f"WB-{uuid.uuid4().hex[:8].upper()}"
+
+
+def _normalized_message_source(platform: str) -> str:
+    value = str(platform or "").strip().lower()
+    if value in {"", "qq", "qqbot"}:
+        return "qq"
+    if value in {"weixin", "wechat"}:
+        return "weixin"
+    return "messaging"
+
+
+def _sync_conversation(
+    task_text: str,
+    *,
+    status: str | None = None,
+    session_id: str | None = None,
+) -> dict:
+    """Update authorized conversation refs using only the public task ID."""
+    from conversation_sync import sync_by_task_text
+
+    result = sync_by_task_text(
+        file_repo.db.db_path,
+        task_text,
+        status=status,
+        session_id=session_id,
+    )
+    if not result.get("ok"):
+        try:
+            _log_action("会话索引同步失败", "公开任务索引暂不可用")
+        except Exception:
+            pass
+    return result
+
+
+def _match_task_ref(reference: str, directories=("任务",)) -> list[Path]:
+    """Resolve a public task ID or title within the requested partitions."""
+    ref = str(reference or "").strip()
+    matches: list[Path] = []
+    for dirname in directories:
+        root = WORKBENCH_ROOT / dirname
+        if not root.is_dir():
+            continue
+        for path in root.glob("*.md"):
+            text = path.read_text(encoding="utf-8", errors="replace")
+            if re.fullmatch(r"WB-[0-9A-Fa-f]{8}", ref):
+                frontmatter = _extract_frontmatter(text)[0] or {}
+                if str(frontmatter.get("task_id") or "").upper() == ref.upper():
+                    matches.append(path)
+                continue
+            heading = re.search(r"(?m)^#\s+(.+?)\s*$", text)
+            if path.stem == ref or (heading and heading.group(1).strip() == ref):
+                matches.append(path)
+    if matches or re.fullmatch(r"WB-[0-9A-Fa-f]{8}", ref):
+        return matches
+    for dirname in directories:
+        root = WORKBENCH_ROOT / dirname
+        if root.is_dir():
+            matches.extend(path for path in root.glob("*.md") if ref in path.stem)
+    return matches
 
 
 def _remove_done_index_entry(stem: str) -> None:
@@ -208,6 +349,50 @@ def _find_archived_operation(done_dir: Path, slug: str, marker: str) -> Path | N
 
 
 # ---------- API ----------
+
+
+@router.post("/content/capture")
+async def content_capture(body: dict) -> dict:
+    return _capture_reviewed_content(file_repo, body)
+
+
+@router.get("/content/item")
+def content_item(
+    dir: str = "",
+    file: str = "",
+    entry_title: str = "",
+    capture_id: str = "",
+) -> dict:
+    return _get_reviewed_content(
+        file_repo,
+        dirname=dir or None,
+        filename=file or None,
+        entry_title=entry_title or None,
+        capture_id=capture_id or None,
+    )
+
+
+@router.post("/content/review")
+async def content_review(body: dict) -> dict:
+    return _review_content(
+        file_repo,
+        body.get("dir"),
+        body.get("file"),
+        body.get("action"),
+        entry_title=body.get("entry_title") or None,
+        sink=CONTENT_INGESTION_SINK,
+    )
+
+
+@router.post("/content/sink-receipt")
+async def content_sink_receipt(body: dict) -> dict:
+    return _complete_content_sink(
+        file_repo,
+        body.get("capture_id"),
+        body.get("task_id"),
+        note_path=body.get("note_path") or "",
+        error=body.get("error") or "",
+    )
 
 @router.get("/board")
 def board() -> dict:
@@ -555,7 +740,7 @@ def health() -> dict:
         db_ok = file_repo.db.health()
     except Exception:  # noqa: BLE001
         db_ok = False
-    plugin_root = _Path(_DASHBOARD_DIR).parent
+    plugin_root = Path(_DASHBOARD_DIR).parent
     scheduler_alive = False
     try:
         lock = _json.loads((plugin_root / "scheduler.lock").read_text(encoding="utf-8"))
@@ -790,6 +975,7 @@ async def abandon(body: dict) -> dict:
             dest = trash_dir / (target.stem + "-dup" + target.suffix)
         _rename_with_retry(target, dest)
         file_repo.event("回收站", dest.name, "abandon", f"放弃移入回收站（原 任务/{target.name}）")
+        _sync_conversation(new_text, status="abandoned")
         _log_action("放弃任务（移入回收站）", f"任务「{target.stem}」{today} 放弃")
         return {"ok": True, "file": dest.name, "abandoned": True, "abandoned_at": today, "moved_to": "回收站"}
 
@@ -822,6 +1008,7 @@ async def reopen(body: dict) -> dict:
         text = target.read_text(encoding="utf-8", errors="replace")
         today = _date.today().strftime("%Y-%m-%d")
         dirname = str(body.get("dir") or "")
+        operation_marker = str(body.get("operation_marker") or "").strip()
 
         # 分支：已处理 → 任务区（跨分区移动 + DB 镜像同步）
         if dirname == "已处理":
@@ -833,6 +1020,8 @@ async def reopen(body: dict) -> dict:
             # completed_at 保留为历史；补 reopened_at
             if "reopened_at:" not in new_text:
                 new_text = _patch_frontmatter(new_text, {"reopened_at": today})
+            if re.fullmatch(r"[0-9a-f]{32}", operation_marker):
+                new_text = _patch_frontmatter(new_text, {"qq_operation": operation_marker})
             new_text += f"\n## 重新打开记录\n\n- {today} 已回到任务列表\n"
             _atomic_write(target, new_text, expected_mtime=mt)
             # 移回任务区（_rename_with_retry = file_repo.move：tasks 行迁移 + moved 事件）
@@ -843,6 +1032,7 @@ async def reopen(body: dict) -> dict:
                 dest = task_dir / (target.stem + "-" + _slugify(target.stem)[:12] + target.suffix)
             _rename_with_retry(target, dest)
             file_repo.event("任务", dest.name, "reopen", f"回到任务列表（原 已处理/{target.name}）")
+            _sync_conversation(new_text, status="todo")
             _log_action("回到任务列表", f"「{target.stem}」从 已处理 移回 任务")
             _remove_done_index_entry(target.stem)
             return {"ok": True, "file": dest.name, "reopened": True, "moved_from": "已处理"}
@@ -856,8 +1046,11 @@ async def reopen(body: dict) -> dict:
             new_text = re.sub(r"^abandoned_at:.*$", f"reopened_at: {today}", new_text, count=1, flags=re.M)
         else:
             new_text = _patch_frontmatter(new_text, {"reopened_at": today})
+        if re.fullmatch(r"[0-9a-f]{32}", operation_marker):
+            new_text = _patch_frontmatter(new_text, {"qq_operation": operation_marker})
         new_text += f"\n## 重新打开记录\n\n- {today} 已恢复为待办\n"
         _atomic_write(target, new_text, expected_mtime=mt)
+        _sync_conversation(new_text, status="todo")
 
     _log_action("重新打开任务", f"任务「{target.stem}」{_date.today().strftime('%Y-%m-%d')} 恢复待办")
     return {"ok": True, "file": target.name, "reopened": True}
@@ -934,6 +1127,7 @@ async def complete(body: dict) -> dict:
         if dest.exists():
             dest = done_dir / (target.stem + "-" + _slugify(target.stem)[:12] + target.suffix)
         _rename_with_retry(target, dest)
+        _sync_conversation(new_text, status="completed")
 
         # 追加已处理日志（结构化去重）
         log = done_dir / f"{today}.md"
@@ -1048,6 +1242,7 @@ async def to_task(body: dict) -> dict:
             return {"ok": False, "error": "task already exists: " + title}
 
         today = _date.today().strftime("%Y-%m-%d")
+        task_id = _new_task_id()
         if entry_title:
             # 条目级：拆出目标小节作为任务内容
             try:
@@ -1057,7 +1252,7 @@ async def to_task(body: dict) -> dict:
             scope = detect_task_scope(section_text)
             task_text = (
                 "---\n"
-                f"type: task\nstatus: todo\nschema_version: {SCHEMA_VERSION}\ncreated: {today}\nsource: workbench\n"
+                f"type: task\nstatus: todo\ntask_id: {task_id}\nschema_version: {SCHEMA_VERSION}\ncreated: {today}\nsource: workbench\n"
                 f"origin: {body['dir']}/{p.name}#{entry_title}\n"
                 f"scope: {scope}\n"
                 "---\n\n"
@@ -1071,7 +1266,7 @@ async def to_task(body: dict) -> dict:
             _log_action("转任务（条目级）", f"「{entry_title}」从 {body['dir']}/{p.name} → 任务「{title}」")
             file_repo.event(body["dir"], p.name, "to_task", f"转任务「{entry_title}」→ {title}")
             # A1：返回新任务文件名（前端执行链路定位用）
-            return {"ok": True, "task": title, "file": p.name, "entry": entry_title, "task_file": task_path.name, "task_dir": "任务"}
+            return {"ok": True, "task": title, "task_id": task_id, "file": p.name, "entry": entry_title, "task_file": task_path.name, "task_dir": "任务"}
 
         # 文件级（向后兼容）— 复制正文（去 frontmatter，而非只写来源引用）
         import re as _re
@@ -1079,7 +1274,7 @@ async def to_task(body: dict) -> dict:
         scope = detect_task_scope(body_text)
         task_text = (
             "---\n"
-            f"type: task\nstatus: todo\nschema_version: {SCHEMA_VERSION}\ncreated: {today}\nsource: workbench\n"
+            f"type: task\nstatus: todo\ntask_id: {task_id}\nschema_version: {SCHEMA_VERSION}\ncreated: {today}\nsource: workbench\n"
             f"origin: {body['dir']}/{p.name}\n"
             f"scope: {scope}\n"
             "---\n\n"
@@ -1099,7 +1294,7 @@ async def to_task(body: dict) -> dict:
 
     _log_action("转任务", f"「{p.stem}」→ 任务「{title}」")
     file_repo.event(body["dir"], p.name, "to_task", f"转任务「{p.stem}」→ {title}")
-    return {"ok": True, "task": title, "file": p.name}
+    return {"ok": True, "task": title, "task_id": task_id, "file": p.name, "task_file": task_path.name, "task_dir": "任务"}
 
 
 @router.post("/trash")
@@ -1126,6 +1321,7 @@ async def trash(body: dict) -> dict:
             text = _patch_frontmatter(text, {"origin": f"{dirname}/{p.name}", "trashed_at": today})
             _atomic_write(p, text)
         _rename_with_retry(p, dest)
+        _sync_conversation(text, status="trashed")
     _log_action("移入回收站", f"「{p.stem}」从 {dirname}")
     return {"ok": True, "trashed": dest.name}
 
@@ -1186,6 +1382,9 @@ async def restore(body: dict) -> dict:
             dest = target_dir / (p.stem + "-restored-" + p.suffix)
 
         _rename_with_retry(p, dest)
+        restored_frontmatter = _extract_frontmatter(text)[0] or {}
+        restored_status = str(restored_frontmatter.get("status") or "active").strip()
+        _sync_conversation(text, status=restored_status)
     _log_action("回收站还原", f"「{p.stem}」→ {dest.parent.name}" + (f"（origin: {origin}）" if origin else "（无 origin，兜底）"))
     return {"ok": True, "file": dest.name, "restored_to": dest.parent.name}
 
@@ -1232,9 +1431,10 @@ async def add_entry(body: dict) -> dict:
                 return {"ok": False, "error": "task already exists: " + title}
             due_line = f"due: {due}\n" if due else ""
             priority_line = f"priority: {priority}\n" if priority else ""
+            task_id = _new_task_id()
             text = (
                 "---\n"
-                f"type: task\nstatus: todo\nschema_version: {SCHEMA_VERSION}\ncreated: {today} {ts}\nsource: manual\n{priority_line}{due_line}"
+                f"type: task\nstatus: todo\ntask_id: {task_id}\nschema_version: {SCHEMA_VERSION}\ncreated: {today} {ts}\nsource: manual\n{priority_line}{due_line}"
                 "---\n\n"
                 f"# {title}\n\n"
                 f"**手动添加：** {now:%Y-%m-%d %H:%M}\n"
@@ -1243,7 +1443,7 @@ async def add_entry(body: dict) -> dict:
                 text += f"\n## 备注\n\n{content}\n"
             _atomic_write(p, text)
             _log_action("手动添加任务", f"「{title}」" + (f"（due {due}）" if due else ""))
-            return {"ok": True, "file": p.name, "dir": dirname}
+            return {"ok": True, "task_id": task_id, "file": p.name, "dir": dirname}
 
         # 聚合文件（按天）
         category_map = {"待验证": "thought_pending", "待回看": "video_pending", "梦中的邮件": "dream_mail", "心理学随想": "psych_pending"}
@@ -1289,9 +1489,13 @@ async def ingest_message(body: dict) -> dict:
     dirname = body.get("dir") or "待验证"
     if dirname not in {"待验证", "待回看", "任务", "梦中的邮件", "心理学随想"}:
         return {"ok": False, "error": "bad dir"}
+    task_id = _task_id_for_message(message_id) if dirname == "任务" else ""
     # 幂等：已消费 → 直接跳过（不重复写）
     if file_repo.db.ingest_exists(message_id):
-        return {"ok": True, "duplicate": True, "dir": dirname}
+        result = {"ok": True, "duplicate": True, "dir": dirname}
+        if task_id:
+            result["task_id"] = task_id
+        return result
 
     title = (body.get("title") or "").strip()
     if not title:
@@ -1328,19 +1532,22 @@ async def ingest_message(body: dict) -> dict:
                 return {"ok": False, "error": "task already exists: " + title}
             due_line = f"due: {due}\n" if due else ""
             scope = detect_task_scope(title + "\n" + content)
+            source = _normalized_message_source(body.get("platform"))
             text = (
                 "---\n"
-                f"type: task\nstatus: todo\nschema_version: {SCHEMA_VERSION}\ncreated: {today} {ts}\nsource: qq\n{due_line}"
+                f"type: task\nstatus: todo\nschema_version: {SCHEMA_VERSION}\ncreated: {today} {ts}\n"
+                f"task_id: {task_id}\nsource: {source}\n{due_line}"
                 f"scope: {scope}\n{marker_line}"
                 "---\n\n"
                 f"# {title}\n\n"
-                f"**QQ 收录：** {now:%Y-%m-%d %H:%M}\n"
+                f"**{source} 收录：** {now:%Y-%m-%d %H:%M}\n"
             )
             if content:
                 text += f"\n## 备注\n\n{content}\n"
         else:
             category_map = {"待验证": "thought_pending", "待回看": "video_pending", "梦中的邮件": "dream_mail", "心理学随想": "psych_pending"}
             cat = category or category_map.get(dirname, "")
+            source = _normalized_message_source(body.get("platform"))
             p = d / f"{today}.md"
             if p.exists():
                 text = p.read_text(encoding="utf-8", errors="replace")
@@ -1349,12 +1556,14 @@ async def ingest_message(body: dict) -> dict:
                     f"# {dirname}收录 {today}\n\n"
                     "---\n"
                     f"type: queued\nschema_version: {SCHEMA_VERSION}\ncategory: {cat}\nstatus: pending\n"
-                    f"received_at: {today} {ts}\nsource: qq\n"
+                    f"received_at: {today} {ts}\nsource: {source}\n"
                     "---\n"
                 )
             section = f"\n## {title}\n"
             if content:
                 section += f"\n**备注：**\n- {content}\n"
+            if re.fullmatch(r"[0-9a-f]{32}", operation_marker):
+                section += f"\n<!-- wb_operation: {operation_marker} -->\n"
             section += "\n---\n"
             text = text.rstrip() + "\n" + section
 
@@ -1368,8 +1577,22 @@ async def ingest_message(body: dict) -> dict:
         file_repo.db.ingest_upsert(message_id, dirname, p.name, "done")
         # API-B（B1）：记录带信息的 created 业务事件（UPDATE 镜像空行或 INSERT；两种场景恰好一条，幂等）
         file_repo.db.record_ingest_created(dirname, p.name, f"收录：{title}")
-        _log_action(f"QQ 收录 → {dirname}", f"「{title}」")
-        return {"ok": True, "duplicate": False, "file": p.name, "dir": dirname}
+        _log_action(f"{_normalized_message_source(body.get('platform'))} 收录 → {dirname}", f"「{title}」")
+        result = {"ok": True, "duplicate": False, "file": p.name, "dir": dirname}
+        if task_id:
+            result["task_id"] = task_id
+        return result
+
+
+@router.get("/conversations")
+def conversations() -> dict:
+    """List privacy-safe authorized task references for the reduced Workbench."""
+    from conversation_index import ConversationIndex
+
+    return {
+        "ok": True,
+        "items": ConversationIndex(file_repo.db.db_path).list_conversations(),
+    }
 
 
 async def qq_command(body: dict) -> dict:
@@ -1388,7 +1611,10 @@ async def qq_command(body: dict) -> dict:
     help_text = (
         "Workbench 命令：\n"
         "/wb 今日\n/wb 状态\n/wb 任务 <内容>\n"
-        "/wb 完成 <任务标题>\n/wb 归档 <任务标题>\n"
+        "/wb 待回看 <内容或链接>\n/wb 待验证 <内容>\n/wb 随想 <内容>\n"
+        "/wb 查看 <任务编号或标题>\n/wb 继续 <任务编号> <补充内容>\n"
+        "/wb 完成 <任务编号或标题>\n/wb 归档 <任务编号或标题>\n"
+        "/wb 重开 <任务编号或标题>\n"
         "/wb 延期 <任务标题> <YYYY-MM-DD>"
     )
     if command.name == "help":
@@ -1405,6 +1631,25 @@ async def qq_command(body: dict) -> dict:
         data = health()
         verdict = data.get("status") or data.get("verdict") or "unknown"
         return {"ok": True, "handled": True, "reply": f"Workbench 健康状态：{verdict}"}
+    if command.name == "show":
+        candidates = _match_task_ref(command.argument, ("任务", "已处理"))
+        if len(candidates) > 1:
+            names = "、".join(candidate.stem for candidate in candidates)
+            return {"ok": False, "handled": True, "error": "ambiguous", "reply": f"匹配到多个任务：{names}"}
+        if not candidates:
+            return {"ok": False, "handled": True, "error": "task not found", "reply": "没有找到该任务。"}
+        target = candidates[0]
+        text = target.read_text(encoding="utf-8", errors="replace")
+        status_match = re.search(r"(?m)^status:\s*(\S+)", text)
+        task_id_match = re.search(r"(?m)^task_id:\s*(WB-[0-9A-Fa-f]{8})\s*$", text)
+        status = status_match.group(1) if status_match else "unknown"
+        task_id = task_id_match.group(1).upper() if task_id_match else "未分配"
+        return {
+            "ok": True,
+            "handled": True,
+            "task_id": task_id,
+            "reply": f"{task_id}｜{target.stem}｜状态：{status}",
+        }
 
     message_id = str(body.get("message_id") or "").strip()
     if not message_id:
@@ -1414,7 +1659,9 @@ async def qq_command(body: dict) -> dict:
             "error": "message_id required for mutation",
             "reply": "未执行：缺少 QQ 消息 ID，无法保证幂等。",
         }
-    operation_id = f"qq-command:{message_id[:200]}"
+    platform = _normalized_message_source(body.get("platform"))
+    scoped_message_id = f"{platform}:{message_id}" if body.get("platform") else message_id
+    operation_id = f"qq-command:{scoped_message_id[:200]}"
     operation_marker = hashlib.sha256(operation_id.encode("utf-8")).hexdigest()[:32]
     with _WRITE_LOCK:
         claim_status = file_repo.db.ingest_status(operation_id)
@@ -1424,26 +1671,53 @@ async def qq_command(body: dict) -> dict:
         if claim_status is None:
             file_repo.db.ingest_upsert(operation_id, "command", "", "processing")
 
-        if command.name == "add":
+        if command.name in {"add", "review", "verify", "note"}:
+            target_dir = {
+                "add": "任务",
+                "review": "待回看",
+                "verify": "待验证",
+                "note": "心理学随想",
+            }[command.name]
+            if recovering and target_dir != "任务":
+                aggregate_dir = WORKBENCH_ROOT / target_dir
+                for aggregate in aggregate_dir.glob("*.md") if aggregate_dir.is_dir() else ():
+                    if f"wb_operation: {operation_marker}" in aggregate.read_text(encoding="utf-8", errors="replace"):
+                        file_repo.db.ingest_upsert(operation_id, target_dir, aggregate.name, "done")
+                        return {"ok": True, "handled": True, "duplicate": True, "reply": "该命令已经处理。"}
             result = await ingest_message(
                 {
                     "message_id": operation_id,
-                    "dir": "任务",
+                    "platform": platform,
+                    "dir": target_dir,
                     "title": command.argument[:80],
                     "content": command.argument,
                     "operation_marker": operation_marker,
                 }
             )
             if result.get("ok") and not result.get("duplicate"):
-                return {"ok": True, "handled": True, "reply": f"已创建任务：{command.argument[:80]}"}
+                if target_dir == "任务":
+                    task_id = result.get("task_id", "")
+                    return {
+                        "ok": True,
+                        "handled": True,
+                        "task_id": task_id,
+                        "reply": f"已创建任务 {task_id}：{command.argument[:80]}",
+                    }
+                return {"ok": True, "handled": True, "reply": f"已收录到{target_dir}：{command.argument[:80]}"}
             expected = WORKBENCH_ROOT / "任务" / f"{_slugify(command.argument[:80])}.md"
             if recovering and expected.is_file() and f"qq_operation: {operation_marker}" in expected.read_text(encoding="utf-8", errors="replace"):
                 file_repo.db.ingest_upsert(operation_id, "任务", expected.name, "done")
                 return {"ok": True, "handled": True, "duplicate": True, "reply": "该命令已经处理。"}
         elif command.name in {"complete", "archive"}:
-            result = await complete(
-                {"title": command.argument, "operation_marker": operation_marker}
-            )
+            candidates = _match_task_ref(command.argument)
+            if len(candidates) > 1:
+                result = {"ok": False, "error": "ambiguous", "candidates": [p.stem for p in candidates]}
+            elif not candidates:
+                result = {"ok": False, "error": "task not found"}
+            else:
+                result = await complete(
+                    {"dir": "任务", "file": candidates[0].name, "operation_marker": operation_marker}
+                )
             if result.get("ok"):
                 file_repo.db.ingest_upsert(operation_id, "已处理", result.get("archived_as", ""), "done")
                 return {"ok": True, "handled": True, "reply": f"已完成并归档：{command.argument}"}
@@ -1454,6 +1728,63 @@ async def qq_command(body: dict) -> dict:
             if recovering and archived is not None:
                 file_repo.db.ingest_upsert(operation_id, "已处理", archived.name, "done")
                 return {"ok": True, "handled": True, "duplicate": True, "reply": "该命令已经处理。"}
+        elif command.name == "append":
+            candidates = _match_task_ref(command.argument)
+            if len(candidates) > 1:
+                result = {"ok": False, "error": "ambiguous", "candidates": [p.stem for p in candidates]}
+            elif not candidates:
+                result = {"ok": False, "error": "task not found"}
+            else:
+                target = candidates[0]
+                current = target.read_text(encoding="utf-8", errors="replace")
+                if f"qq_operation: {operation_marker}" in current:
+                    file_repo.db.ingest_upsert(operation_id, "任务", target.name, "done")
+                    return {"ok": True, "handled": True, "duplicate": True, "reply": "该命令已经处理。"}
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+                updated = _append_execution_record(
+                    current, f"{timestamp}（来源：{platform}）{command.extra}"
+                )
+                updated = _patch_frontmatter(updated, {"qq_operation": operation_marker})
+                _atomic_write(target, updated, expected_mtime=target.stat().st_mtime)
+                file_repo.record_updated_payload(
+                    "任务", target.name, f"{platform} 续接：{command.extra[:160]}"
+                )
+                file_repo.db.ingest_upsert(operation_id, "任务", target.name, "done")
+                task_id_match = re.search(
+                    r"(?m)^task_id:\s*(WB-[0-9A-Fa-f]{8})\s*$", updated
+                )
+                task_id = task_id_match.group(1).upper() if task_id_match else ""
+                return {
+                    "ok": True,
+                    "handled": True,
+                    "task_id": task_id,
+                    "summary": target.stem,
+                    "reply": f"已续接 {command.argument}：{command.extra}",
+                }
+        elif command.name == "reopen":
+            if recovering:
+                recovered = _match_task_ref(command.argument, ("任务",))
+                recovered = [
+                    path for path in recovered
+                    if f"qq_operation: {operation_marker}" in path.read_text(encoding="utf-8", errors="replace")
+                ]
+                if len(recovered) == 1:
+                    file_repo.db.ingest_upsert(operation_id, "任务", recovered[0].name, "done")
+                    return {"ok": True, "handled": True, "duplicate": True, "reply": "该命令已经处理。"}
+            candidates = _match_task_ref(command.argument, ("任务", "已处理"))
+            if len(candidates) > 1:
+                result = {"ok": False, "error": "ambiguous", "candidates": [p.stem for p in candidates]}
+            elif not candidates:
+                result = {"ok": False, "error": "task not found"}
+            else:
+                target = candidates[0]
+                dirname = target.parent.name
+                result = await reopen(
+                    {"dir": dirname, "file": target.name, "operation_marker": operation_marker}
+                )
+            if result.get("ok"):
+                file_repo.db.ingest_upsert(operation_id, "任务", result.get("file", ""), "done")
+                return {"ok": True, "handled": True, "reply": f"已重新打开：{command.argument}"}
         elif command.name == "defer":
             candidates = _match_task(command.argument)
             if len(candidates) > 1:
@@ -1532,6 +1863,7 @@ async def defer_task(body: dict) -> dict:
         if r.get("stuck"):
             _log_action("顺延被拒（卡住）", f"任务「{target.stem}」已顺延 {r['count']} 次，达到上限")
             return {"ok": True, "stuck": True, "count": r["count"], "file": target.name}
+        _sync_conversation(text, status="todo")
         _log_action("手动顺延", f"任务「{target.stem}」{r['from']} → {r['to']}（第 {r['count']} 次）")
         return {"ok": True, "deferred": True, "from": r["from"], "to": r["to"], "count": r["count"], "file": target.name}
 
@@ -1643,6 +1975,7 @@ async def execute_task(body: dict) -> dict:
         _atomic_write(target, new_text)
         _log_action("▶ 执行任务", f"「{target.stem}」已派给 GT（source={source}）")
         file_repo.event(body.get("dir", ""), target.name, "execute", f"▶ 执行任务「{target.stem}」已派给 GT（source={source}）")
+        _sync_conversation(new_text, status="in_progress")
 
     # 手动工作台任务由前端创建 Hermes 会话；这里仅完成任务准备和状态切换。
     return {
@@ -1674,6 +2007,7 @@ async def bind_session(body: dict) -> dict:
         _atomic_write(target, text)
         _log_action("🔗 绑定执行会话", f"「{target.stem}」→ {session_id}")
         file_repo.event(body.get("dir", ""), target.name, "bind_session", f"🔗 绑定执行会话 → {session_id}")
+        _sync_conversation(text, session_id=session_id)
     return {"ok": True, "session_id": session_id, "file": target.name}
 
 
@@ -1698,6 +2032,7 @@ async def reset_execution(body: dict) -> dict:
         reason = str(body.get("reason") or "会话启动失败").strip()
         new_text += f"\n## 执行失败记录\n\n- {datetime.now():%Y-%m-%d %H:%M} {reason}\n"
         _atomic_write(target, new_text)
+        _sync_conversation(new_text, status="todo", session_id="")
         _log_action("执行失败 → 恢复待办", f"「{target.stem}」：{reason}")
     file_repo.event(body.get("dir", ""), target.name, "reset_execution", f"执行失败恢复待办：{reason}")
     return {"ok": True, "status": "todo", "file": target.name}
@@ -1847,10 +2182,12 @@ async def delete_file(body: dict) -> dict:
         if not target or not target.is_file():
             return {"ok": False, "error": "file not found"}
 
+        task_text = target.read_text(encoding="utf-8", errors="replace")
         # 磁盘删除 + DB 清除（DualRepo.delete 双写）
         file_repo.delete(target)
         # task_events 记录
         file_repo.event(dirname, filename, "deleted", "永久删除")
+        _sync_conversation(task_text, status="deleted")
 
         _log_action("永久删除", f"「{filename}」从{dirname}彻底删除（磁盘 + DB + events）")
 

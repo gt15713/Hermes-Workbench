@@ -80,6 +80,19 @@ def _patch_fm_field(text: str, field: str, value: str) -> str:
     return text[: m.start(2)] + fm_text + text[m.end(2):]
 
 
+def _sync_conversation(dual, task_text: str, *, status: str, session_id=None) -> None:
+    if dual is None or not getattr(dual, "db", None):
+        return
+    from conversation_sync import sync_by_task_text
+
+    sync_by_task_text(
+        dual.db.db_path,
+        task_text,
+        status=status,
+        session_id=session_id,
+    )
+
+
 def apply_result(item: dict, decision: str, root: Path, dual=None, now=None) -> str:
     """回写：completed / failed / skipped（unknown 不改）。返回动作名。
 
@@ -102,13 +115,16 @@ def apply_result(item: dict, decision: str, root: Path, dual=None, now=None) -> 
         text = text.rstrip() + f"\n\n## 完成记录\n\n- {ts} 收到显式成功结果，自动标记完成\n"
         _write(dual, path, text)
         _event(dual, "任务", path.name, "completed", "会话结束自动回写完成")
+        _sync_conversation(dual, text, status="completed")
         return "completed"
     if decision == "failed":
         text = _patch_fm_field(text, "status", "todo")
+        text = _patch_fm_field(text, "session_id", "")
         text = _patch_fm_field(text, "execution_finished_at", now.isoformat(timespec="seconds"))
         text = text.rstrip() + f"\n\n## 执行失败记录\n\n- {ts} 收到显式失败结果，自动恢复待办\n"
         _write(dual, path, text)
         _event(dual, "任务", path.name, "reset_execution", "会话异常自动恢复待办")
+        _sync_conversation(dual, text, status="todo", session_id="")
         return "failed"
     return "skipped"
 

@@ -12,14 +12,12 @@
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
-/* 2026-08-22 等宽看板（已拍板）：展开列固定 16rem。
-   宿主 Tailwind 不含 w-[16rem]/min-w-[14rem]/max-w-[18rem] 等任意值规则
-   （已核验 dist CSS 无此类），此前列宽实为内容自适应 → 待验证区内容多被撑宽。
-   宽度写在本文件（构建时内联注入，100% 生效），不依赖宿主工具类。 */
+/* Expanded columns keep a readable minimum but share spare width. Empty
+   partitions compact to rails in the component unless the user overrides. */
 .wb-section {
-  width: 16rem;
+  flex: 1 0 16rem;
   min-width: 16rem;
-  max-width: 16rem;
+  max-width: 28rem;
 }
 
 /* 2026-08-22 弹窗尺寸修复：宿主 Tailwind 无 w-[min(52rem,94vw)] 规则

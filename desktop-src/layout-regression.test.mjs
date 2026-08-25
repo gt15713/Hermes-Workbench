@@ -27,19 +27,22 @@ test('collapsed rails remain available for manual collapse', () => {
   assert.match(css, /\.wb-section--collapsed[\s\S]*border/)
 })
 
-test('expanded board columns share one fixed width (16rem, in workbench.css)', () => {
-  // 宿主 Tailwind 无 w-[16rem]/min-w-[14rem]/max-w-[18rem] 规则（已核验 dist CSS），
-  // 等宽必须写在插件自有 CSS 中，否则类为死类、列宽回到内容自适应。
-  assert.match(css, /\.wb-section\s*\{[\s\S]*?width:\s*16rem/)
+test('expanded board columns grow adaptively from a stable minimum width', () => {
+  assert.match(css, /\.wb-section\s*\{[\s\S]*?flex:\s*1 0 16rem/)
   assert.match(css, /\.wb-section\s*\{[\s\S]*?min-width:\s*16rem/)
-  assert.match(css, /\.wb-section\s*\{[\s\S]*?max-width:\s*16rem/)
+  assert.match(css, /\.wb-section\s*\{[\s\S]*?max-width:\s*28rem/)
   assert.doesNotMatch(board, /wb-section flex[\s\S]*?w-\[16rem\]/)
 })
 
-test('all board sections default expanded (equal widths, no auto-collapse)', () => {
-  assert.match(board, /collapsedOverride \?\? false/)
+test('empty board sections compact automatically unless the user overrides them', () => {
+  assert.match(board, /collapsedOverride \?\? filtered\.length === 0/)
   assert.match(api, /COLLAPSED_KEY = 'wbCollapsedSections\.v2'/)
   assert.match(api, /persist\(\$collapsedSections, COLLAPSED_KEY, \{\}\)/)
+})
+
+test('board cards expose authorized messaging platforms by public task id', () => {
+  assert.match(board, /conversationPlatformsByTask/)
+  assert.match(board, /查看消息任务/)
 })
 
 test('dialogs use plugin-owned width class (host lacks w-[min(52rem,94vw)])', () => {

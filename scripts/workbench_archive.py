@@ -32,6 +32,7 @@ LOG_DIR = WORKBENCH / "日志"
 _dual = None
 try:
     from repo import DualRepo, FileRepo, SqliteRepo  # noqa: E402
+    from conversation_sync import sync_by_task_text  # noqa: E402
 
     _dual = DualRepo(
         FileRepo(root=WORKBENCH),
@@ -126,6 +127,7 @@ def main() -> int:
         DONE_DIR.mkdir(exist_ok=True)
         if _dual is not None:
             _dual.move(f, dest)
+            sync_by_task_text(_dual.db.db_path, text, status="completed")
         else:
             shutil.move(str(f), str(dest))
         _append_done_log(dest.stem, task_title)

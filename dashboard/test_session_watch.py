@@ -27,10 +27,12 @@ def _mk_in_progress(
     name: str = "任务X.md",
     session_id: str = "sess-1",
     execution_result: str = "pending",
+    task_id: str = "",
 ) -> Path:
     p = root / "任务" / name
     p.write_text(
         f"---\ntype: task\nstatus: in_progress\nsession_id: {session_id}\n"
+        f"{f'task_id: {task_id}\n' if task_id else ''}"
         f"execution_result: {execution_result}\n---\n\n# {name[:-3]}\n",
         encoding="utf-8",
     )
@@ -87,6 +89,70 @@ def test_apply_failed_restores_todo(root):
     text = p.read_text(encoding="utf-8")
     assert "status: todo" in text
     assert "## 执行失败记录" in text
+
+
+def test_apply_completed_syncs_authorized_conversation(root):
+    from conversation_index import ConversationIndex
+    from repo import DualRepo, FileRepo, SqliteRepo
+
+    db = SqliteRepo(root / "wb.db", root=root)
+    dual = DualRepo(FileRepo(root=root), db)
+    p = _mk_in_progress(
+        root, "索引完成.md", execution_result="success", task_id="WB-20000001"
+    )
+    index = ConversationIndex(db.db_path)
+    index.upsert_authorized(
+        platform="qqbot",
+        message_id="private-session-watch-complete",
+        summary="后台完成",
+        task_id="WB-20000001",
+        status="in_progress",
+        session_id="sess-1",
+    )
+
+    action = apply_result(
+        {"path": p, "text": p.read_text(encoding="utf-8"), "session_id": "sess-1"},
+        "completed",
+        root,
+        dual=dual,
+    )
+
+    assert action == "completed"
+    assert index.list_conversations()[0]["status"] == "completed"
+
+
+def test_apply_failed_syncs_todo_and_clears_authorized_session(root):
+    from conversation_index import ConversationIndex
+    from repo import DualRepo, FileRepo, SqliteRepo
+
+    db = SqliteRepo(root / "wb.db", root=root)
+    dual = DualRepo(FileRepo(root=root), db)
+    p = _mk_in_progress(
+        root, "索引失败.md", execution_result="failure", task_id="WB-20000002"
+    )
+    index = ConversationIndex(db.db_path)
+    index.upsert_authorized(
+        platform="weixin",
+        message_id="private-session-watch-failure",
+        summary="后台失败",
+        task_id="WB-20000002",
+        status="in_progress",
+        session_id="sess-1",
+    )
+
+    action = apply_result(
+        {"path": p, "text": p.read_text(encoding="utf-8"), "session_id": "sess-1"},
+        "failed",
+        root,
+        dual=dual,
+    )
+
+    assert action == "failed"
+    row = index.list_conversations()[0]
+    assert row["status"] == "todo"
+    assert row["session_id"] is None
+    assert row["resume_mode"] == "summary"
+    assert "session_id: sess-1" not in p.read_text(encoding="utf-8")
 
 
 # ---------- 端到端 ----------

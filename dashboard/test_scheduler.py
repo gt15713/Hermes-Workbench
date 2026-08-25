@@ -407,9 +407,17 @@ class TestCatchUp:
         monkeypatch.setattr(scheduler, "_STATE_FILE", tmp_path / "state.json")
         monkeypatch.setattr(scheduler, "JOBS", [{"key": "daily_report", "expr": "0 20 * * *", "desc": ""}])
         monkeypatch.setattr(workbench_config, "get_catch_up_hours", lambda: 24)
-        # 已跑过今天 20:00 → 补跑判定 last_fire <= last_run → 跳过
+        # 已跑过最近一次 20:00 → 补跑判定 last_fire <= last_run → 跳过。
+        # 不硬编码日历日期，否则测试会在次日开始错误地要求补跑。
+        last_fire = scheduler._last_cron_fire("0 20 * * *", datetime.now())
+        assert last_fire is not None
         scheduler._save_state(
-            {"last_runs": {"daily_report": "daily_report|2026-08-23 20:00"}, "errors": {"count": 0, "last": None}}
+            {
+                "last_runs": {
+                    "daily_report": f"daily_report|{last_fire.strftime('%Y-%m-%d %H:%M')}"
+                },
+                "errors": {"count": 0, "last": None},
+            }
         )
         s = scheduler.Scheduler(None)
         ran: list[str] = []

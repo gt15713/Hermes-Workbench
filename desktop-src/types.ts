@@ -11,6 +11,7 @@ export interface WbCard {
   path: string
   title: string
   status: string
+  task_id?: null | string
   execution_result?: null | string
   entry_title?: null | string
   entries: string[]
@@ -41,6 +42,22 @@ export interface WbBoard {
   today: string
   totals: { pending: number; total: number }
   sections: WbSection[]
+}
+
+/** Privacy-safe reference to a task accepted from an authorized message channel. */
+export interface WbConversationRef {
+  ref_id: string
+  platform: 'qq' | 'weixin' | 'messaging' | string
+  summary: string
+  task_id: string
+  status: string
+  resume_mode: 'summary' | 'original'
+  session_id?: string | null
+  updated_at: string
+}
+
+export function conversationActionLabel(ref: Pick<WbConversationRef, 'resume_mode' | 'session_id'>): string {
+  return ref.resume_mode === 'original' && !!ref.session_id ? '打开原会话' : '摘要续接'
 }
 
 /** Column display config — mirrors our 7 partitions. */

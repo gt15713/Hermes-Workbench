@@ -501,6 +501,24 @@ class SqliteRepo(WorkbenchRepo):
             finally:
                 conn.close()
 
+    def record_updated_payload(self, partition: str, filename: str, payload: str) -> None:
+        """Attach business context to the latest mirror-generated updated event."""
+        with self._lock:
+            conn = _db_connect(self.db_path)
+            try:
+                conn.execute(
+                    """UPDATE task_events SET payload=? WHERE id=(
+                           SELECT id FROM task_events
+                           WHERE kind='updated' AND partition=? AND filename=?
+                             AND (payload IS NULL OR payload='')
+                           ORDER BY id DESC LIMIT 1
+                       )""",
+                    (payload, partition, filename),
+                )
+                conn.commit()
+            finally:
+                conn.close()
+
     def get_mirror_mtime(self, partition: str, filename: str) -> float | None:
         """P0-3（B2）：镜像行 mtime（无行返回 None）。"""
         with self._lock:
@@ -690,6 +708,13 @@ class SqliteRepo(WorkbenchRepo):
                         "DELETE FROM tasks WHERE partition=? AND filename=?",
                         (src_p, src_f),
                     )
+                # 运行历史跟随任务实体移动。否则归档/恢复后的卡片只能看到
+                # 一条 moved，归档前的 created/updated/execution 事件会留在旧分区。
+                conn.execute(
+                    "UPDATE task_events SET partition=?, filename=?"
+                    " WHERE partition=? AND filename=?",
+                    (dst_p, dst_f, src_p, src_f),
+                )
                 conn.execute(
                     "INSERT INTO task_events (partition, filename, kind, payload, created_at) VALUES (?, ?, 'moved', ?, ?)",
                     (dst_p, dst_f, f"{src_p}/{src_f} -> {dst_p}/{dst_f}", _now_str()),
@@ -940,6 +965,13 @@ class DualRepo(WorkbenchRepo):
             self.db.record_ingest_created(partition, filename, payload)
         except Exception as e:  # noqa: BLE001
             _log.warning("workbench: db record_ingest_created failed: %s", e)
+
+    def record_updated_payload(self, partition: str, filename: str, payload: str) -> None:
+        """Enrich the latest updated event without creating a duplicate event."""
+        try:
+            self.db.record_updated_payload(partition, filename, payload)
+        except Exception as e:  # noqa: BLE001
+            _log.warning("workbench: db record_updated_payload failed: %s", e)
 
     def append_action_log(self, action: str, detail: str) -> None:
         self.file.append_action_log(action, detail)
