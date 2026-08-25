@@ -1,8 +1,10 @@
 # Hermes Workbench
 
+[![CI](https://github.com/gt15713/Hermes-Workbench/actions/workflows/ci.yml/badge.svg)](https://github.com/gt15713/Hermes-Workbench/actions/workflows/ci.yml)
+
 Hermes Agent 的本地任务信息流插件：把 QQ 消息或手工录入转成可追踪任务，提供看板、执行历史、提醒、回执、归档和链路健康状态。
 
-> 当前版本：[`v0.1.0-alpha`](https://github.com/gt15713/Hermes-Workbench/releases/latest)
+> 最新发布版：[`v0.1.0-alpha`](https://github.com/gt15713/Hermes-Workbench/releases/latest)。`main` 是通过 CI 的开发快照，可能包含尚未进入 Release 的功能。
 >
 > 已验证宿主：Hermes Desktop `v0.20.5`
 >
@@ -10,7 +12,7 @@ Hermes Agent 的本地任务信息流插件：把 QQ 消息或手工录入转成
 
 ## 它负责什么
 
-Workbench 负责 **登记、展示、提醒、状态协调与归档**；任务实际如何调研、总结或处理，仍由 Hermes 和对应 Skill 完成。
+Workbench 负责 **登记、展示、索引、提醒、状态协调与归档**；任务实际如何调研、总结、写入知识库或处理，仍由 Hermes 和对应 Skill 完成。它是 Hermes 的连接与可视化层，不重复实现 Agent、消息网关、会话存储、定时引擎或知识摄入算法。
 
 完整消息闭环需要 Hermes Desktop、本插件和已连接的 QQ Bot。仅使用本地任务管理时可以不配置 QQ。
 
@@ -18,7 +20,7 @@ Workbench 负责 **登记、展示、提醒、状态协调与归档**；任务�
 
 ## 主要功能
 
-- QQ、微信私聊或 QQ 群聊消息收录，链接、任务和想法按规则进入对应分区；
+- 通过授权后的 `/wb` 命令收录 QQ、微信私聊或 QQ 群聊中的链接、任务和想法；QQ群当前需明确 @机器人；
 - 看板与 Table 两种视图，支持搜索、标签和到期筛选；
 - 待验证、待回看、任务、已处理、回收站及自定义分区；
 - 运行历史、最近执行结果、失败原因和投递状态可见；
@@ -27,11 +29,17 @@ Workbench 负责 **登记、展示、提醒、状态协调与归档**；任务�
 - QQ 投递失败自动重试（5 分钟一次，最多 3 次）；
 - 数据库、调度器、投递、Obsidian 和 QQ 链路的分层健康检查。
 
+### 已审核内容收件箱
+
+内容收录只创建本地待审核项，不会自动写入 Obsidian。用户明确选择“沉淀到 Obsidian”后，Workbench 才创建确定性的 Hermes 摄入任务；只有 Hermes 返回真实笔记路径后，界面才显示沉淀成功并归档源内容。排队、失败或刷新后均保留重试入口。
+
+Obsidian MCP 不是必需依赖。默认可靠边界是 Hermes 调用 `obsidian-zh-ingest` Skill 并通过文件系统写入 Vault；MCP 仅作为 Obsidian 正在运行时的可选增强。
+
 ## 5 分钟快速开始
 
 ### 1. 安装插件
 
-从 [Releases](https://github.com/gt15713/Hermes-Workbench/releases/latest) 下载源码包，或克隆仓库：
+普通用户从 [Releases](https://github.com/gt15713/Hermes-Workbench/releases/latest) 下载发布包；需要测试尚未发布功能的贡献者可克隆 `main`：
 
 ```powershell
 git clone https://github.com/gt15713/Hermes-Workbench.git workbench-view
@@ -208,6 +216,10 @@ python scripts/workbench_privacy_gate.py
 - 普通 QQ 群消息仍取决于 Hermes 上游适配器的事件支持；
 - 定时任务随 Hermes 桌面进程存活，并非系统级后台服务；
 - Workbench 管理任务状态，但不替代 Hermes Skill 的具体执行能力。
+
+## Roadmap
+
+后续版本优先验证三项差异化价值：跨平台会话索引与原会话续接、待处理内容收件箱、审核后调用 Hermes Skills 并展示真实回执。新功能只有在真实场景中比 Hermes 原生操作更省事、且具备自动化与端到端证据时才进入正式范围。
 
 ## 安全与许可
 

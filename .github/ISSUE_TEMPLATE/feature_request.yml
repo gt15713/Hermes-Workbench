@@ -1,0 +1,40 @@
+name: 功能建议
+description: 提议补充 Hermes、而不是重复 Hermes 的 Workbench 能力
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: scenario
+    attributes:
+      label: 真实使用场景
+      description: 你在什么情况下遇到了什么问题？当前需要几步完成？
+    validations:
+      required: true
+  - type: textarea
+    id: value
+    attributes:
+      label: 期望结果
+      description: 该功能如何让 Workbench 补充或连接 Hermes？
+    validations:
+      required: true
+  - type: textarea
+    id: existing
+    attributes:
+      label: Hermes 现有能力
+      description: Hermes、Gateway、Session 或已有 Skill 是否已经覆盖一部分？
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 可验证的验收标准
+      description: 请列出能够证明功能真正有用的端到端结果。
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: 范围确认
+      options:
+        - label: 该建议不会要求 Workbench 复制一套 Hermes Agent、Gateway、Session、cron 或知识摄入引擎。
+          required: true

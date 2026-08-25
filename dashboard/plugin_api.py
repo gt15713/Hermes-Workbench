@@ -98,6 +98,7 @@ def _queue_content_ingestion_sink(item: dict) -> dict:
     task_id = f"WB-{capture_id[:8].upper()}"
     task_file = f"content-ingest-{capture_id}.md"
     task_path = file_repo.partition_dir("任务") / task_file
+    receipt_script = (Path(__file__).resolve().parent.parent / "scripts" / "hermes_wb_content_receipt.py").as_posix()
     if task_path.exists():
         existing = task_path.read_text(encoding="utf-8", errors="replace")
         if f"task_id: {task_id}" not in existing or f"content_capture_id: {capture_id}" not in existing:
@@ -122,7 +123,7 @@ def _queue_content_ingestion_sink(item: dict) -> dict:
             "## 执行契约\n\n"
             "1. 严格执行 `obsidian-zh-ingest`，不得绕过其模板、归域和校验闸门。\n"
             "2. 成功后必须获得真实 vault-relative note_path；失败时不得声称已入库。\n"
-            "3. 成功后执行：`python C:/Users/Kayura/AppData/Local/hermes/plugins/workbench-view/scripts/hermes_wb_content_receipt.py "
+            f"3. 成功后执行：`python \"{receipt_script}\" "
             f"--capture-id {capture_id} --task-id {task_id} --note-path \"<真实 vault-relative 路径>\"`。\n"
             "4. 失败后执行同一脚本并把 `--note-path` 改为 `--error \"<失败原因>\"`。\n"
         )

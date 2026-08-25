@@ -94,7 +94,7 @@ def test_content_receipt_script_records_real_path_and_archives_capture(tmp_path)
         "sink_task_id": task_id,
         "sink_task_dir": "任务",
         "sink_task_file": "content-ingest-0123456789abcdef.md",
-        "sink_task_path": "D:/Obsidian/个人工作台/任务/content-ingest-0123456789abcdef.md",
+        "sink_task_path": "/example-vault/任务/content-ingest-0123456789abcdef.md",
     }
     import json
     capture = tmp_path / "待验证" / f"content-{capture_id}.md"

@@ -59,7 +59,7 @@ describe('reviewed content actions', () => {
       sink_task_id: 'WB-A1B2C3D4',
       sink_task_dir: '任务',
       sink_task_file: 'content-ingest-a1b2c3d4.md',
-      sink_task_path: 'D:/Obsidian/个人工作台/任务/content-ingest-a1b2c3d4.md',
+      sink_task_path: '/example-vault/任务/content-ingest-a1b2c3d4.md',
     })
 
     expect(model.statusText).toBe('等待 Hermes 摄入')
@@ -75,7 +75,7 @@ describe('reviewed content actions', () => {
       sink_task_id: 'WB-A1B2C3D4',
       sink_task_dir: '任务',
       sink_task_file: 'content-ingest-a1b2c3d4.md',
-      sink_task_path: 'D:/Obsidian/个人工作台/任务/content-ingest-a1b2c3d4.md',
+      sink_task_path: '/example-vault/任务/content-ingest-a1b2c3d4.md',
     }
     const result = await launchQueuedContentItem(item, {
       prepare: async input => ({ ok: true, file: input.file, path: input.path, scope: 'ingest' }),
@@ -88,6 +88,6 @@ describe('reviewed content actions', () => {
     expect(result.ok).toBe(true)
     expect(result.file).toBe('content-ingest-a1b2c3d4.md')
     expect(submitted).toHaveLength(1)
-    expect(submitted[0]).toContain('任务文件：D:/Obsidian/个人工作台/任务/content-ingest-a1b2c3d4.md')
+    expect(submitted[0]).toContain('任务文件：/example-vault/任务/content-ingest-a1b2c3d4.md')
   })
 })

@@ -171,7 +171,7 @@ def test_review_sink_queue_never_claims_note_before_agent_receipt(repo):
             "task_id": "WB-A1B2C3D4",
             "task_dir": "任务",
             "task_file": "摄入-学习资料.md",
-            "task_path": "D:/Obsidian/个人工作台/任务/摄入-学习资料.md",
+            "task_path": "/example-vault/任务/摄入-学习资料.md",
         },
     )
 
@@ -195,7 +195,7 @@ def test_agent_receipt_is_bound_to_queued_task_and_archives_content(repo):
             "task_id": "WB-A1B2C3D4",
             "task_dir": "任务",
             "task_file": "摄入-学习资料.md",
-            "task_path": "D:/Obsidian/个人工作台/任务/摄入-学习资料.md",
+            "task_path": "/example-vault/任务/摄入-学习资料.md",
         },
     )["item"]
 

@@ -8,6 +8,15 @@
 - Node 20+（前端依赖由 `desktop-src/package-lock.json` 锁定）
 - Git；如需实机验证，使用当前支持的 Hermes Desktop
 
+安装依赖：
+
+```powershell
+python -m pip install pytest ruff pyyaml fastapi httpx2
+cd desktop-src
+npm ci
+cd ..
+```
+
 ## 本地验证（提交前必须全过）
 
 ```powershell
@@ -30,6 +39,9 @@ CI 会在 Ubuntu 与 Windows 上重复执行上述核心门禁。提交前不能
 
 > **构建链铁律**：Hermes 打包 / asar 由 Hermes 上游负责；本仓库只维护磁盘插件源码与
 > `desktop/plugin.js`。不要通过修改 Hermes 核心源码实现 Workbench 功能。
+
+不要直接编辑生成的 `desktop/plugin.js`。前端变更必须修改 `desktop-src/`，运行
+`node build-desktop.mjs` 后提交同步生成的 bundle。
 
 ## 提交规范
 
@@ -60,3 +72,12 @@ CI 会在 Ubuntu 与 Windows 上重复执行上述核心门禁。提交前不能
 - PR 需附测试证据、行为说明、数据兼容性和隐私影响
 - 涉及 QQ 的 PR 必须区分私聊、群 @、普通群消息和主动投递，不得用配置存在代替事件级证据
 - 涉及任务状态的 PR 必须说明成功、失败、无终态、手动归档和自动归档的行为
+
+PR 提交前请确认：
+
+- [ ] Ruff、后端测试与隐私门禁通过
+- [ ] Vitest、布局回归和 TypeScript 类型检查通过
+- [ ] `desktop/plugin.js` 已从源码重建且无未提交差异
+- [ ] 没有提交配置、数据库、日志、凭据、个人路径或真实消息
+- [ ] 说明了对 Hermes/Gateway/Session/Skills 边界的影响，没有重复实现宿主已有能力
+- [ ] GitHub Actions 的 Ubuntu 与 Windows 作业均通过

@@ -179,6 +179,7 @@ class TestReviewedContentInboxApi:
         assert "scope: ingest" in task_text
         assert f"content_capture_id: {captured['capture_id']}" in task_text
         assert "obsidian-zh-ingest" in task_text
+        assert str((Path(api.__file__).resolve().parent.parent / "scripts" / "hermes_wb_content_receipt.py").as_posix()) in task_text
 
     def test_content_sink_receipt_requires_bound_task_and_real_note_path(self, wb):
         captured = asyncio.run(api.content_capture({

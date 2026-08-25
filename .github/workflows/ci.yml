@@ -24,6 +24,9 @@ jobs:
       - name: Ruff lint
         run: ruff check dashboard scripts
 
+      - name: Privacy gate
+        run: python scripts/workbench_privacy_gate.py
+
       - name: Pytest (dashboard)
         run: python -m pytest dashboard -q
 

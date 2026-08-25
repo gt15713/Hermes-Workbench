@@ -83,7 +83,7 @@
 ### Task 5: Natural-language Workbench Capture Skill
 
 **Files:**
-- Create: `C:/Users/Kayura/AppData/Local/hermes/skills/workbench-capture/SKILL.md`
+- Create: `<HERMES_HOME>/skills/workbench-capture/SKILL.md`
 
 **Interfaces:**
 - Consumes: authorized QQ/Weixin requests that explicitly ask to register, review, verify, continue, complete, or archive Workbench work.
