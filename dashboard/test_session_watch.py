@@ -30,9 +30,10 @@ def _mk_in_progress(
     task_id: str = "",
 ) -> Path:
     p = root / "任务" / name
+    task_id_line = f"task_id: {task_id}\n" if task_id else ""
     p.write_text(
         f"---\ntype: task\nstatus: in_progress\nsession_id: {session_id}\n"
-        f"{f'task_id: {task_id}\n' if task_id else ''}"
+        f"{task_id_line}"
         f"execution_result: {execution_result}\n---\n\n# {name[:-3]}\n",
         encoding="utf-8",
     )

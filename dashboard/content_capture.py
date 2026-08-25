@@ -12,7 +12,6 @@ import re
 from datetime import datetime, timezone
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-
 PARTITION = "待验证"
 ARCHIVE_PARTITION = "已处理"
 _MARKER = re.compile(r"(?m)^<!-- wb_content: (\{.*\}) -->$")

@@ -5,7 +5,6 @@ from pathlib import Path
 
 from conversation_index import ConversationIndex
 
-
 SCRIPTS = Path(__file__).resolve().parent.parent / "scripts"
 
 

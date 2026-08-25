@@ -8,7 +8,6 @@
 import { atom, type PluginRestOptions, type PluginStorage, queryClient } from '@hermes/plugin-sdk'
 import type { WbBoard, WbConversationRef, WbEvent, WbSearchResponse, WbSettings, WbSettingsResponse } from './types'
 import type { WbContentItem } from './content-review'
-import { withTimeout } from './request'
 
 type Rest = <T>(path: string, opts?: PluginRestOptions) => Promise<T>
 type Socket = (path: string, onMessage: (data: unknown) => void) => () => void
@@ -114,13 +113,9 @@ export const fetchConversations = () =>
   call<{ ok: boolean; items: WbConversationRef[] }>('/conversations')
 
 export const fetchFile = (dir: string, file: string) =>
-  withTimeout(
-    call<{ content: string }>(
-      `/file?dirname=${encodeURIComponent(dir)}&filename=${encodeURIComponent(file)}`,
-      { timeoutMs: 15_000 }
-    ),
-    15_000,
-    '任务详情加载'
+  call<{ content: string }>(
+    `/file?dirname=${encodeURIComponent(dir)}&filename=${encodeURIComponent(file)}`,
+    { timeoutMs: 15_000 }
   )
 
 export const fetchContentItem = (dir: string, file: string) =>
@@ -130,13 +125,9 @@ export const fetchContentItem = (dir: string, file: string) =>
 
 /** Task 5.2 批次 1：运行历史（复用 /recent，dir+file 时后端查 task_events 倒序） */
 export const fetchRecentEvents = (dir: string, file: string) =>
-  withTimeout(
-    call<{ entries: WbEvent[]; source?: string }>(
-      `/recent?limit=50&dir=${encodeURIComponent(dir)}&file=${encodeURIComponent(file)}`,
-      { timeoutMs: 15_000 }
-    ),
-    15_000,
-    '运行历史加载'
+  call<{ entries: WbEvent[]; source?: string }>(
+    `/recent?limit=50&dir=${encodeURIComponent(dir)}&file=${encodeURIComponent(file)}`,
+    { timeoutMs: 15_000 }
   )
 
 /** A4：全局搜索（标题/内容/标签；tag 可选过滤）。 */

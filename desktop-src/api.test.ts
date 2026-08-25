@@ -23,29 +23,31 @@ describe('withTimeout', () => {
     await expect(withTimeout(Promise.resolve('ok'), 50)).resolves.toBe('ok')
   })
 
-  it('rejects a hung real file request instead of leaving the drawer loading forever', async () => {
-    vi.useFakeTimers()
-    const neverReturningRest = () => new Promise<never>(() => {})
+  it('passes the file timeout to the host-native request contract', async () => {
+    const calls: Array<{ path: string; timeoutMs?: number }> = []
+    const boundedRest = async <T>(path: string, options?: { timeoutMs?: number }) => {
+      calls.push({ path, timeoutMs: options?.timeoutMs })
+      return { content: 'ok' } as T
+    }
     const storage = { get: <T>(_key: string, fallback: T) => fallback, set: () => {} }
-    const unbind = bindApi(neverReturningRest, storage as never, () => () => {})
+    const unbind = bindApi(boundedRest as never, storage as never, () => () => {})
 
-    const result = fetchFile('已处理', '任务.md')
-    const assertion = expect(result).rejects.toThrow('任务详情加载超时，请重试')
-    await vi.advanceTimersByTimeAsync(15_000)
-    await assertion
+    await fetchFile('已处理', '任务.md')
+    expect(calls).toEqual([{ path: '/file?dirname=%E5%B7%B2%E5%A4%84%E7%90%86&filename=%E4%BB%BB%E5%8A%A1.md', timeoutMs: 15_000 }])
     unbind()
   })
 
-  it('rejects a hung real history request instead of leaving the history tab loading forever', async () => {
-    vi.useFakeTimers()
-    const neverReturningRest = () => new Promise<never>(() => {})
+  it('passes the history timeout to the host-native request contract', async () => {
+    const calls: Array<{ path: string; timeoutMs?: number }> = []
+    const boundedRest = async <T>(path: string, options?: { timeoutMs?: number }) => {
+      calls.push({ path, timeoutMs: options?.timeoutMs })
+      return { entries: [] } as T
+    }
     const storage = { get: <T>(_key: string, fallback: T) => fallback, set: () => {} }
-    const unbind = bindApi(neverReturningRest, storage as never, () => () => {})
+    const unbind = bindApi(boundedRest as never, storage as never, () => () => {})
 
-    const result = fetchRecentEvents('已处理', '任务.md')
-    const assertion = expect(result).rejects.toThrow('运行历史加载超时，请重试')
-    await vi.advanceTimersByTimeAsync(15_000)
-    await assertion
+    await fetchRecentEvents('已处理', '任务.md')
+    expect(calls).toEqual([{ path: '/recent?limit=50&dir=%E5%B7%B2%E5%A4%84%E7%90%86&file=%E4%BB%BB%E5%8A%A1.md', timeoutMs: 15_000 }])
     unbind()
   })
 })

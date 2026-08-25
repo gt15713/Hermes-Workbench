@@ -8,7 +8,6 @@ import time
 
 from conversation_index import ConversationIndex
 
-
 _TASK_ID_RE = re.compile(r"(?m)^task_id:\s*(WB-[0-9A-Fa-f]{8})\s*$")
 
 

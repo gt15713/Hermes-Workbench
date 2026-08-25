@@ -31,8 +31,8 @@ LOG_DIR = WORKBENCH / "日志"
 # 阶段 1.5：接入插件 DualRepo 双写（DB 镜像）。import 失败 → 降级纯文件（原行为）。
 _dual = None
 try:
-    from repo import DualRepo, FileRepo, SqliteRepo  # noqa: E402
     from conversation_sync import sync_by_task_text  # noqa: E402
+    from repo import DualRepo, FileRepo, SqliteRepo  # noqa: E402
 
     _dual = DualRepo(
         FileRepo(root=WORKBENCH),

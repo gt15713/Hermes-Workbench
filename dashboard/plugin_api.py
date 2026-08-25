@@ -34,15 +34,21 @@ _DASHBOARD_DIR = str(Path(__file__).resolve().parent)
 if _DASHBOARD_DIR not in _sys.path:
     _sys.path.insert(0, _DASHBOARD_DIR)
 
+from content_capture import (
+    capture_content as _capture_reviewed_content,
+)
+from content_capture import (
+    complete_content_sink as _complete_content_sink,
+)
+from content_capture import (
+    get_content_item as _get_reviewed_content,
+)
+from content_capture import (
+    review_content as _review_content,
+)
 from contract import (
     PARTITIONS,
     SCHEMA_VERSION,
-)
-from content_capture import (
-    capture_content as _capture_reviewed_content,
-    complete_content_sink as _complete_content_sink,
-    get_content_item as _get_reviewed_content,
-    review_content as _review_content,
 )
 from qq_commands import parse_qq_command
 from qq_health import assess_qq_health

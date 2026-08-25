@@ -23,8 +23,8 @@ TOMORROW = TODAY + datetime.timedelta(days=1)
 _dual = None
 try:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "dashboard"))
-    from repo import DualRepo, FileRepo, SqliteRepo  # noqa: E402
     from conversation_sync import sync_by_task_text  # noqa: E402
+    from repo import DualRepo, FileRepo, SqliteRepo  # noqa: E402
 
     _dual = DualRepo(FileRepo(root=ROOT.parent), SqliteRepo(root=ROOT.parent))
 except Exception as _e:  # noqa: BLE001

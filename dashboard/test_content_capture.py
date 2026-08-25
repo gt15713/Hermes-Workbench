@@ -1,11 +1,10 @@
 from pathlib import Path
 
-import pytest
 import content_capture as content_capture_module
-
+import pytest
 from content_capture import (
-    capture_content,
     canonicalize_url,
+    capture_content,
     get_content_item,
     review_content,
 )

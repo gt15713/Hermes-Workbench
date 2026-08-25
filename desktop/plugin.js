@@ -24,25 +24,6 @@ import {
 
 // desktop-src/api.ts
 import { atom, queryClient } from "@hermes/plugin-sdk";
-
-// desktop-src/request.ts
-function withTimeout(promise, timeoutMs, label = "请求") {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${label}超时，请重试`)), timeoutMs);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (error) => {
-        clearTimeout(timer);
-        reject(error);
-      }
-    );
-  });
-}
-
-// desktop-src/api.ts
 var rest = null;
 var $collapsedSections = atom({});
 var $filterText = atom("");
@@ -92,24 +73,16 @@ var RECENT_EVENTS_KEY = (dir, file) => ["workbench", "events", dir, file];
 var CONTENT_ITEM_KEY = (dir, file) => ["workbench", "content-item", dir, file];
 var fetchBoard = () => call("/board");
 var fetchConversations = () => call("/conversations");
-var fetchFile = (dir, file) => withTimeout(
-  call(
-    `/file?dirname=${encodeURIComponent(dir)}&filename=${encodeURIComponent(file)}`,
-    { timeoutMs: 15e3 }
-  ),
-  15e3,
-  "任务详情加载"
+var fetchFile = (dir, file) => call(
+  `/file?dirname=${encodeURIComponent(dir)}&filename=${encodeURIComponent(file)}`,
+  { timeoutMs: 15e3 }
 );
 var fetchContentItem = (dir, file) => call(
   `/content/item?dir=${encodeURIComponent(dir)}&file=${encodeURIComponent(file)}`
 );
-var fetchRecentEvents = (dir, file) => withTimeout(
-  call(
-    `/recent?limit=50&dir=${encodeURIComponent(dir)}&file=${encodeURIComponent(file)}`,
-    { timeoutMs: 15e3 }
-  ),
-  15e3,
-  "运行历史加载"
+var fetchRecentEvents = (dir, file) => call(
+  `/recent?limit=50&dir=${encodeURIComponent(dir)}&file=${encodeURIComponent(file)}`,
+  { timeoutMs: 15e3 }
 );
 var fetchSearch = (q, tag = "") => call(
   `/search?limit=20&q=${encodeURIComponent(q)}${tag ? `&tag=${encodeURIComponent(tag)}` : ""}`
