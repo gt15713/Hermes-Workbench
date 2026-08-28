@@ -63,6 +63,9 @@ _PENDING_DELIVERY_SCHEMA_VERSION = 2
 _DELIVERY_CONTEXT: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
     "workbench_delivery_context", default=None
 )
+# Suppresses a resend only while this Python process survives a successful send
+# followed by a state-save failure. There is no durable receiver receipt or
+# idempotency key, so delivery remains at-least-once across process restart.
 _DELIVERY_SUCCESS_CACHE: set[str] = set()
 
 # 任务生命周期阶段（WB-S1-011：last_runs 只在 completed 时更新，不把尝试当完成）
@@ -570,6 +573,12 @@ def _derive_phase(job_key: str, result: dict, ok: bool, reason: str) -> tuple[st
         if not ok:
             return PHASE_FAILED, reason or "delivery contract unhealthy"
         return phase, err
+    if job_key == "nudge" and result.get("delivery") in {"failed", "error-no-hermes"}:
+        if result.get("queued_retry") is True:
+            # The generated nudge is the durable logical artifact waiting for
+            # identity-bound delivery; retry success may complete this attempt.
+            return PHASE_ARTIFACT_WRITTEN, f"{reason}; queued for retry"
+        return PHASE_FAILED, reason or "delivery queue rejected"
     if not ok:
         return PHASE_FAILED, reason or "failed"
     return PHASE_COMPLETED, None
@@ -1950,10 +1959,33 @@ def _job_nudge(ctx: Any) -> dict:
     if not text:
         return {"generated": "empty", "delivery": "skipped-empty"}
     parts = _split_output(text)
-    delivery = _deliver(parts.get("qq") or "")
-    if delivery == "failed" and parts.get("qq"):
-        _queue_delivery(parts["qq"])
-    return {"generated": "ok", "delivery": delivery, "queued_retry": delivery == "failed" and bool(parts.get("qq"))}
+    qq_message = parts.get("qq") or ""
+    delivery = _deliver(qq_message)
+    queued_retry = False
+    if delivery in {"failed", "error-no-hermes"} and qq_message:
+        delivery_context = _DELIVERY_CONTEXT.get() or {}
+        job_key = delivery_context.get("job_key")
+        attempt_key = delivery_context.get("attempt_key")
+        started_at = delivery_context.get("started_at")
+        error_id = None
+        if all((job_key, attempt_key, started_at)):
+            error_id = _error_identity(
+                job_key,
+                attempt_key,
+                started_at,
+                f"delivery:{delivery}",
+            )
+        queued_retry = _queue_delivery(
+            qq_message,
+            job_key=job_key,
+            attempt_key=attempt_key,
+            error_id=error_id,
+        )
+    return {
+        "generated": "ok",
+        "delivery": delivery,
+        "queued_retry": queued_retry,
+    }
 
 
 _JOB_RUNNERS = {
