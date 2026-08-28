@@ -6,9 +6,14 @@ on:
 
 jobs:
   test:
+    # WB-S1-022 第二层一致性保险（非根治）：runner 上 Python I/O 统一 UTF-8，
+    # 消除 Ubuntu/Windows locale 漂移；根治在脚本输出边界显式 reconfigure('utf-8')。
+    env:
+      PYTHONUTF8: "1"
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest]
+
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

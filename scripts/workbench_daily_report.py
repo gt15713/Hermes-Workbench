@@ -11,7 +11,17 @@ import datetime as dt
 import json
 import os
 import re
+import sys
 from pathlib import Path
+
+# WB-S1-022：产品输出边界显式 UTF-8。Windows 非 UTF-8 控制台（charmap/cp1252、
+# PYTHONUTF8=0）下中文与 emoji 必须仍可输出并被父端捕获；不依赖 runner 环境保险。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass
+
 
 # P0-A：env 注入优先；手动运行回落中立默认
 ROOT = Path(os.environ.get("WORKBENCH_ROOT", str(Path.home() / "Workbench")))

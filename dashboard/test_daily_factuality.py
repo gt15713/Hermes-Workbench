@@ -561,3 +561,37 @@ class TestTitleNormalization:
         assert r.returncode == 0, r.stderr
         print("list_items:", r.stdout.strip())
         assert r.stdout.strip() != "[]"
+
+
+# ===== WB-S1-022: Windows 非 UTF-8 控制台中文输出回归（cp1252/charmap） =====
+
+def test_chinese_output_survives_non_utf8_console(tmp_path):
+    """WB-S1-022 回归：PYTHONUTF8=0 + PYTHONIOENCODING=cp1252 下，脚本边界必须仍输出
+    可捕获的 UTF-8 中文（产品脚本 stdout 显式 UTF-8，不依赖 runner 环境）。"""
+    env = dict(os.environ)
+    env["WORKBENCH_ROOT"] = str(tmp_path)
+    env["WORKBENCH_DB"] = str(tmp_path / "wb.db")
+    env["PYTHONUTF8"] = "0"
+    env["PYTHONIOENCODING"] = "cp1252"
+    _write(tmp_path / "待回看" / "2026-08-20.md",
+           "# 待回看 2026-08-20\n---\nstatus: pending\n---\n\n## 一个真实的待回看条目\n")
+    # 子进程A：--data JSON（含中文标题）
+    r = subprocess.run(
+        [sys.executable, str(SCRIPTS / "workbench_daily_report.py"), "--data"],
+        capture_output=True, text=True, encoding="utf-8", errors="strict",
+        env=env, timeout=30,
+    )
+    assert r.returncode == 0, r.stderr
+    assert "一个真实的待回看条目" in r.stdout, r.stdout
+    # 子进程B：python -c import 后 print 中文（TestTitleNormalization 同型边界，emoji 模板同型）
+    code = (
+        "import sys; sys.path.insert(0, r'{S}'); import workbench_daily_report as w; "
+        "print(w.normalize_title('视频标题 -bilibili-https://www.bilibili.com/video/BV1xx'))"
+    ).replace("{S}", str(SCRIPTS))
+    r2 = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True, text=True, encoding="utf-8", errors="strict",
+        env=env, timeout=30,
+    )
+    assert r2.returncode == 0, r2.stderr
+    assert r2.stdout.strip() == "视频标题", r2.stdout
