@@ -4,8 +4,9 @@
  */
 import { Button, cn, host, useMutation, useQuery } from '@hermes/plugin-sdk'
 import { useState } from 'react'
-import { bindSession, CONTENT_ITEM_KEY, executeTask, fetchContentItem, fetchFile, fetchRecentEvents, FILE_KEY, invalidateBoard, RECENT_EVENTS_KEY, resetExecution, reviewContent } from './api'
-import { contentReviewModel, launchQueuedContentItem, type WbContentReviewAction } from './content-review'
+import { bindSession, CONTENT_ITEM_KEY, executeTask, fetchContentItem, fetchFile, fetchRecentEvents, FILE_KEY, invalidateBoard, RECENT_EVENTS_KEY, resetExecution, retryExtraction, reviewContent } from './api'
+import { friendlyApiError } from './api-errors'
+import { contentReceiptSteps, contentReviewModel, launchQueuedContentItem, type WbContentReviewAction } from './content-review'
 import type { WorkbenchExecutionDeps } from './execution'
 import type { WbCard } from './types'
 
@@ -76,6 +77,8 @@ export function WbPreviewDrawer({
   onClose: () => void
 }) {
   const [tab, setTab] = useState<'preview' | 'history'>('preview')
+  // P0（2026-08-27）：自绘沉淀确认（window.confirm 被 bundled 环境吞掉）
+  const [pendingSinkConfirm, setPendingSinkConfirm] = useState(false)
   const isReviewedContent = card.dir === '待验证' && card.file.startsWith('content-') && !card.entry_title
 
   const { data, isLoading, error, refetch } = useQuery({
@@ -125,7 +128,7 @@ export function WbPreviewDrawer({
       invalidateBoard()
       await refetchContent()
     },
-    onError: (error) => host.notify({ kind: 'error', message: String((error as Error).message || '操作失败，可重试') }),
+    onError: (error) => host.notify({ kind: 'error', message: friendlyApiError(error) }),
   })
   const queuedLaunchMutation = useMutation({
     mutationFn: () => launchQueuedContentItem(contentItem!, contentExecutionDeps),
@@ -136,7 +139,23 @@ export function WbPreviewDrawer({
       invalidateBoard()
       await refetchContent()
     },
-    onError: (error) => host.notify({ kind: 'error', message: String((error as Error).message || '摄入任务启动失败；可再次重试') }),
+    onError: (error) => host.notify({ kind: 'error', message: friendlyApiError(error) }),
+  })
+  // Task 5（2026-08-27）：独立重试抽取——与重试沉淀严格分列，失败原因如实透出
+  const retryExtractionMutation = useMutation({
+    mutationFn: () => retryExtraction(contentItem!.dir, contentItem!.file),
+    onSuccess: async (result) => {
+      if (!result.ok) {
+        // P0（2026-08-27 目视二轮）：业务错误（如 extraction hook unavailable）
+        // 也必须走人话翻译，不得让英文原文直穿 UI。
+        host.notify({ kind: 'error', message: friendlyApiError(result.error || '抽取失败，可稍后重试') })
+        await refetchContent()
+        return
+      }
+      host.notify({ kind: 'success', message: '抽取完成，原文已更新' })
+      await refetchContent()
+    },
+    onError: (error) => host.notify({ kind: 'error', message: friendlyApiError(error) }),
   })
 
   const tabBtn = (active: boolean) =>
@@ -148,20 +167,15 @@ export function WbPreviewDrawer({
     )
 
   return (
-    <div
-      className={cn(
-        'fixed inset-0 z-[10001] flex items-center justify-center bg-black/40'
-      )}
-      onClick={onClose}
+    // P0（2026-08-27 目视二轮）：视口级 fixed 居中弹窗会被宿主右栏原生
+    // 表面遮挡（z-index 无法越过），且宽度压迫工作台。改为官方 kanban
+    // 同款「面板内右侧滑出抽屉」：锚定在最近 positioned 祖先（Workbench
+    // 面板）上，与右栏物理隔离，宽度固定不挤压内容。
+    <div className="wb-drawer"
+      role="dialog"
+      aria-modal="false"
+      aria-label="文件预览"
     >
-      <div
-        className="flex h-[80vh] w-[560px] max-w-[92vw] flex-col rounded-xl border border-(--ui-stroke-secondary)
-                   bg-(--ui-bg-elevated) p-5 text-(--ui-text-primary) shadow-[0_20px_60px_rgba(0,0,0,0.5)]"
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-        aria-label="文件预览"
-      >
         {/* Header */}
         <div className="mb-3 flex items-center justify-between">
           <span className="text-base font-semibold">{card.title || card.file}</span>
@@ -192,31 +206,98 @@ export function WbPreviewDrawer({
             {reviewModel && contentItem && (
               <section className="mb-3 rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-secondary) p-3">
                 <div className="font-medium">内容审核 · {reviewModel.statusText}</div>
+                {/* Task 5：收进来 → 审核 → 沉淀 三步回执 */}
+                <ol className="mt-2 space-y-1">
+                  {contentReceiptSteps(contentItem).map((step) => (
+                    <li key={step.label} className="flex items-start gap-2 text-[0.75rem]">
+                      {/* 用户拍板（2026-08-27）：徽标全部取消统一样式——
+                          纯文本符号前缀 + inline style 上色，零依赖任何编译链路 */}
+                      <span
+                        style={{
+                          flexShrink: 0,
+                          color: step.state === 'error' ? 'var(--ui-red)'
+                            : step.state === 'done' ? 'var(--ui-green, var(--ui-text-quaternary))'
+                            : step.state === 'active' ? 'var(--ui-accent)'
+                            : 'var(--ui-text-tertiary)',
+                        }}
+                      >
+                        {step.state === 'error' ? '✖' : step.state === 'done' ? '✔' : step.state === 'active' ? '▶' : step.state === 'skipped' ? '⊘' : '○'}
+                      </span>
+                      <span className="shrink-0 font-medium text-(--ui-text-primary)">{step.label}</span>
+                      <span
+                        className="min-w-0 break-all"
+                        style={
+                          step.state === 'error'
+                            ? { color: 'var(--ui-red)', fontWeight: 500 }
+                            : undefined
+                        }
+                      >
+                        {step.detail}
+                      </span>
+                    </li>
+                  ))}
+                </ol>
                 {contentItem.original_url && (
                   <div className="mt-1 break-all text-(--ui-text-tertiary)">来源：{contentItem.original_url}</div>
                 )}
-                {reviewModel.error && <div className="mt-1 text-(--ui-text-danger)">{reviewModel.error}</div>}
+                {reviewModel.error && <div className="mt-1 text-(--ui-red)">{reviewModel.error}</div>}
                 {reviewModel.notePath && <div className="mt-1 break-all text-(--ui-text-secondary)">笔记：{reviewModel.notePath}</div>}
                 {reviewModel.actions.length > 0 && (
                   <div className="mt-3 flex gap-2">
-                    {reviewModel.actions.map((action) => (
+                    {pendingSinkConfirm ? (
+                      // P0：自绘确认条——明确两键，替代被吞的 window.confirm
+                      <div className="flex w-full items-center gap-2 rounded-md border border-(--ui-accent)/40 bg-(--ui-accent)/10 px-2 py-1.5">
+                        <span className="text-[0.75rem] text-(--ui-text-primary)">确认沉淀到 Obsidian？</span>
+                        <Button
+                          size="xs"
+                          disabled={reviewMutation.isPending}
+                          onClick={() => { setPendingSinkConfirm(false); reviewMutation.mutate('sink_to_obsidian') }}
+                        >
+                          确认沉淀
+                        </Button>
+                        <Button size="xs" variant="outline" onClick={() => setPendingSinkConfirm(false)}>
+                          取消
+                        </Button>
+                      </div>
+                    ) : (
+                      reviewModel.actions.map((action) => (
                       <Button
                         key={action.id}
                         size="xs"
-                        variant={action.id === 'archive_only' ? 'outline' : 'secondary'}
-                        disabled={reviewMutation.isPending || queuedLaunchMutation.isPending}
+                        variant={
+                          action.id === 'archive_only'
+                            ? 'outline'
+                            : action.id === 'retry_extraction'
+                              ? 'secondary'
+                              : 'secondary'
+                        }
+                        disabled={
+                          reviewMutation.isPending ||
+                          queuedLaunchMutation.isPending ||
+                          retryExtractionMutation.isPending
+                        }
                         onClick={() => {
                           if (action.id === 'launch_sink_task') {
                             queuedLaunchMutation.mutate()
                             return
                           }
-                          if (action.id === 'sink_to_obsidian' && !window.confirm('确认将这条已审核内容沉淀到 Obsidian？')) return
+                          if (action.id === 'retry_extraction') {
+                            retryExtractionMutation.mutate()
+                            return
+                          }
+                          if (action.id === 'sink_to_obsidian') {
+                            // P0（2026-08-27）：window.confirm 在 bundled 环境被吞
+                            // （「沉淀弹窗没渲染」根因），改用自绘两键确认条。
+                            setPendingSinkConfirm(true)
+                            return
+                          }
                           reviewMutation.mutate(action.id)
                         }}
                       >
                         {action.label}
                       </Button>
-                    ))}
+                      ))
+                    )}
                   </div>
                 )}
               </section>
@@ -226,7 +307,7 @@ export function WbPreviewDrawer({
               <div className="flex h-full items-center justify-center text-(--ui-text-tertiary)">加载中…</div>
             )}
             {error && (
-              <div className="flex h-full flex-col items-center justify-center gap-2 text-(--ui-text-danger)">
+              <div className="flex h-full flex-col items-center justify-center gap-2 text-(--ui-red)">
                 <span>{String((error as Error).message || '加载失败')}</span>
                 <Button size="sm" variant="secondary" onClick={() => void refetch()}>重试</Button>
               </div>
@@ -240,7 +321,7 @@ export function WbPreviewDrawer({
               <div className="flex h-full items-center justify-center text-(--ui-text-tertiary)">加载中…</div>
             )}
             {evError && (
-              <div className="flex h-full flex-col items-center justify-center gap-2 text-(--ui-text-danger)">
+              <div className="flex h-full flex-col items-center justify-center gap-2 text-(--ui-red)">
                 <span>{String((evError as Error).message || '运行历史加载失败')}</span>
                 <Button size="sm" variant="secondary" onClick={() => void refetchEvents()}>重试</Button>
               </div>
@@ -292,7 +373,6 @@ export function WbPreviewDrawer({
             复制路径
           </Button>
         </div>
-      </div>
     </div>
   )
 }

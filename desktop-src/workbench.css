@@ -2,6 +2,28 @@
 .wb-root {
   font-size: 0.875rem;
   line-height: 1.55;
+  /* P0（2026-08-27 目视二轮）：为面板内滑出抽屉提供定位上下文。
+     没有它，drawer 的 absolute 会逃逸到宿主更大容器——预览/历史
+     tab 因内容高度不同呈现"一个铺满一个缩条"。 */
+  position: relative;
+  overflow: hidden;
+}
+
+/* 用户拍板（2026-08-27 三轮复验后）：预览/运行历史两 tab 全幅覆盖——
+   回到最初用户认可的"铺满会话消息区"形态。 */
+.wb-drawer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  background: var(--ui-bg-elevated);
+  padding: 1.25rem;
+  color: var(--ui-text-primary);
 }
 
 .wb-column {

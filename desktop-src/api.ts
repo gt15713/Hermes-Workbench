@@ -223,6 +223,16 @@ export const reviewContent = (dir: string, file: string, action: 'archive_only' 
     body: { dir, file, action },
   })
 
+/**
+ * Task 5（2026-08-27）：独立重试抽取——与「重试沉淀」严格分列。
+ * 钩子未注入时后端如实返回 retryable 错误，绝不显示假成功。
+ */
+export const retryExtraction = (dir: string, file: string) =>
+  call<WbContentItemResponse>('/content/retry-extraction', {
+    method: 'POST',
+    body: { dir, file },
+  })
+
 // ── writes ───────────────────────────────────────────────────────────
 
 export const completeTask = (dir: string, file: string) =>

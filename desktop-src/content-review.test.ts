@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { contentReviewModel, launchQueuedContentItem } from './content-review'
+import { contentReceiptSteps, contentReviewModel, launchQueuedContentItem } from './content-review'
 
 const base = {
   capture_id: 'CAP-001',
@@ -30,7 +30,7 @@ describe('reviewed content actions', () => {
   it('never presents a note path after a failed sink', () => {
     const model = contentReviewModel({
       ...base,
-      extraction_state: 'failed',
+      extraction_state: 'extracted',
       review_state: 'sink_failed',
       note_path: null,
       last_error: '知识库写入失败',
@@ -89,5 +89,58 @@ describe('reviewed content actions', () => {
     expect(result.file).toBe('content-ingest-a1b2c3d4.md')
     expect(submitted).toHaveLength(1)
     expect(submitted[0]).toContain('任务文件：/example-vault/任务/content-ingest-a1b2c3d4.md')
+  })
+})
+
+describe('three-step receipt (收进来 → 审核 → 沉淀)', () => {
+  it('pending capture sits at step 1 with 抽取未完成', () => {
+    const steps = contentReceiptSteps(base)
+    expect(steps.map(s => s.state)).toEqual(['done', 'active', 'todo'])
+    for (const s of steps) {
+      expect(['收进来', '审核', '沉淀']).toContain(s.label)
+      expect(typeof s.detail).toBe('string')
+    }
+  })
+
+  it('archived item shows 审核 done and 沉淀 skipped as a distinct outcome', () => {
+    const steps = contentReceiptSteps({ ...base, review_state: 'archived' })
+    expect(steps[0].state).toBe('done')
+    expect(steps[1].state).toBe('done')
+    expect(steps[2].state).toBe('skipped')
+    expect(steps[2].detail).toContain('仅归档')
+  })
+
+  it('sunk item completes all three steps and carries the real note path', () => {
+    const steps = contentReceiptSteps({
+      ...base,
+      extraction_state: 'extracted',
+      review_state: 'sunk',
+      note_path: '知识库/示例.md',
+    })
+    expect(steps.map(s => s.state)).toEqual(['done', 'done', 'done'])
+    expect(steps[2].detail).toContain('知识库/示例.md')
+  })
+
+  it('failed sink keeps 沉淀 active-with-error, never fakes success color', () => {
+    const steps = contentReceiptSteps({
+      ...base,
+      review_state: 'sink_failed',
+      last_error: '知识库写入失败',
+    })
+    expect(steps[2].state).toBe('error')
+  })
+
+  it('extraction failure is visible at step 1 and retry-extraction stays an independent action from retry-sink', () => {
+    // CoderX §5：独立「重试抽取」入口；「重试沉淀」不得冒充。
+    const model = contentReviewModel({
+      ...base,
+      extraction_state: 'failed',
+      review_state: 'sink_failed',
+      last_error: 'B站风控 412，稍后再试',
+    })
+    expect(model.actions.map(a => a.id)).toContain('retry_extraction')
+    expect(model.actions.map(a => a.id)).toContain('sink_to_obsidian')
+    expect(model.actions.find(a => a.id === 'retry_extraction')!.label).toBe('重试抽取')
+    expect(model.statusText).toContain('抽取失败')
   })
 })

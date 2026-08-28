@@ -4,6 +4,8 @@ import test from 'node:test'
 
 const root = new URL('.', import.meta.url)
 const board = readFileSync(new URL('board.tsx', root), 'utf8')
+// 2026-08-27 结构纠偏：今日视图组件已抽取至 home.tsx，相关断言读新家
+const home = readFileSync(new URL('home.tsx', root), 'utf8')
 const api = readFileSync(new URL('api.ts', root), 'utf8')
 const css = readFileSync(new URL('workbench.css', root), 'utf8')
 // P0-B：宿主样式仅本机/HERMES_HOME 可用时校验；开源 CI 缺省则跳过该项
@@ -79,9 +81,10 @@ test('detail and history reads use the host-native bounded request contract', ()
 })
 
 test('today suggestions explain their deterministic basis without implying an agent decision', () => {
-  assert.match(board, /✨ 规则建议/)
-  assert.match(board, /依据任务状态、截止日期和最近结果生成/)
-  assert.doesNotMatch(board, /✨ Agent 建议/)
+  // 2026-08-27 结构纠偏：今日视图组件已抽取至 home.tsx，断言随之指向新家
+  assert.match(home, /✨ 规则建议/)
+  assert.match(home, /依据任务状态、截止日期和最近结果生成/)
+  assert.doesNotMatch(home, /✨ Agent 建议/)
 })
 
 test('Hermes session composer contract remains stable', { skip: !hermesStyles }, () => {

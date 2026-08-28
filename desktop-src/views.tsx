@@ -207,7 +207,7 @@ export function TableBoardView({ board, onPreview }: { board: WbBoard; onPreview
                     <span className="text-(--ui-text-quaternary)">—</span>
                   )}
                 </td>
-                <td className={cn('px-2 py-1.5 whitespace-nowrap', isOverdue(card.due) ? 'font-semibold text-(--ui-text-danger)' : 'text-(--ui-text-secondary)')}>
+                <td className={cn('px-2 py-1.5 whitespace-nowrap', isOverdue(card.due) ? 'font-semibold text-(--ui-red)' : 'text-(--ui-text-secondary)')}>
                   {card.due || '—'}
                   {isOverdue(card.due) && ' ⚠'}
                 </td>

@@ -64,6 +64,7 @@ import { suggestTags, type TagSuggestion } from './tag-suggest'
 import type { WbBriefCard } from './api'
 import { WbPreviewDrawer } from './drawer'
 import { TableBoardView, ViewSwitcher } from './views'
+import { HomeView } from './home'
 import { ConversationIndexView } from './conversations'
 
 const executionDeps: WorkbenchExecutionDeps = {
@@ -106,7 +107,7 @@ class CardErrorBoundary extends Component<{ children: ReactNode }, { error: unkn
   render() {
     if (this.state.error) {
       return (
-        <div className="mb-1.5 rounded-md border border-(--ui-stroke-danger) bg-(--ui-bg-elevated) p-2.5 text-[0.75rem] text-(--ui-text-danger)">
+        <div className="mb-1.5 rounded-md border border-(--ui-red) bg-(--ui-bg-elevated) p-2.5 text-[0.75rem] text-(--ui-red)">
           卡片渲染失败（数据异常）
         </div>
       )
@@ -351,7 +352,7 @@ function WbCardView({ card, sectionKey, onPreview, openMenuKey, onMenuOpenChange
         <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ backgroundColor: tone }} />
         <span>{card.status}</span>
         {card.due && (
-          <span className={isOverdue(card.due) ? 'font-semibold text-(--ui-text-danger)' : undefined}>
+          <span className={isOverdue(card.due) ? 'font-semibold text-(--ui-red)' : undefined}>
             · 截止 {card.due}
             {isOverdue(card.due) && ' ⚠'}
           </span>
@@ -1172,181 +1173,9 @@ function NewTaskDialog({ board, onClose }: { board: WbBoard; onClose: () => void
   )
 }
 
-// ── Today view（P0-1，B4）─────────────────────────────────────────────
-// UX Spec S1：今日视图 = 默认首页（规则区三组 + 建议区 5 类 + 待确认 badge 在工具栏）
-// 不新增路由：WorkbenchBoardPage 内 showToday 分支默认渲染
-
-const BRIEF_TYPE_META: Record<string, { icon: string; label: string }> = {
-  new_task: { icon: 'lightbulb', label: '新任务' },
-  duplicate: { icon: 'warning', label: '重复' },
-  blocked: { icon: 'stop', label: '阻塞' },
-  overdue: { icon: 'calendar', label: '过期重估' },
-  decision: { icon: 'question', label: '需决策' },
-}
-
-function TodayCardRow({ card, onPreview }: { card: WbCard; onPreview: (c: WbCard) => void }) {
-  const tone = STATUS_TONE[card.status] || 'var(--ui-text-tertiary)'
-  const prio = priorityMeta(card.priority || '')
-  return (
-    <button
-      className="flex w-full items-center gap-2 rounded-md border border-(--ui-stroke-secondary) px-2.5 py-1.5 text-left transition-colors hover:border-(--ui-accent)"
-      onClick={() => onPreview(card)}
-      type="button"
-    >
-      <span className="size-1.5 shrink-0 rounded-full" style={{ background: tone }} />
-      {prio && <span className="h-3 w-0.5 shrink-0 rounded" style={{ background: prio.fg }} />}
-      <span className="min-w-0 flex-1 truncate text-[0.75rem] font-medium text-(--ui-text-primary)">
-        {card.title || card.file.replace(/\.md$/, '')}
-      </span>
-      {card.due && (
-        <span className={cn('shrink-0 text-[0.75rem]', isOverdue(card.due) ? 'font-semibold text-(--ui-text-danger)' : 'text-(--ui-text-tertiary)')}>
-          {card.due}
-        </span>
-      )}
-    </button>
-  )
-}
-
-function BriefCardView({ card, onAccept, onIgnore }: { card: WbBriefCard; onAccept?: () => void; onIgnore: () => void }) {
-  const meta = BRIEF_TYPE_META[card.type] ?? { icon: 'info', label: card.type }
-  return (
-    <div className="flex items-start gap-2 rounded-md border border-(--ui-stroke-secondary) px-2.5 py-2">
-      <Codicon name={meta.icon} size="0.8rem" className="mt-0.5 shrink-0" style={{ color: 'var(--ui-accent)' }} />
-      <div className="min-w-0 flex-1">
-        <div className="text-[0.8125rem] font-semibold text-(--ui-text-primary)">{card.title}</div>
-        <div className="mt-0.5 text-[0.75rem] text-(--ui-text-tertiary)">{card.reason}</div>
-        <details className="mt-1 text-[0.75rem] text-(--ui-text-quaternary)">
-          <summary className="cursor-pointer">查看依据</summary>
-          <ul className="mt-1 list-disc pl-4">
-            {card.evidence.map(item => <li key={item}>{item}</li>)}
-          </ul>
-        </details>
-        <div className="mt-1 flex items-center gap-1">
-          {onAccept && (
-            <button
-              className="rounded bg-(--ui-accent)/15 px-2 py-1 text-[0.75rem] text-(--ui-accent) hover:bg-(--ui-accent)/25"
-              onClick={onAccept}
-              type="button"
-            >
-              采纳
-            </button>
-          )}
-          <button
-            className="rounded px-2 py-1 text-[0.75rem] text-(--ui-text-tertiary) hover:bg-(--ui-stroke-secondary)"
-            onClick={onIgnore}
-            type="button"
-          >
-            忽略
-          </button>
-        </div>
-      </div>
-      <span className="shrink-0 rounded bg-(--ui-bg-quinary) px-1 py-0.5 text-[0.75rem] text-(--ui-text-quaternary)">
-        规则建议
-      </span>
-    </div>
-  )
-}
-
-function TodayView({ board, onPreview, onGoBoard }: {
-  board: WbBoard
-  onPreview: (c: WbCard) => void
-  onGoBoard: () => void
-}) {
-  const [ignored, setIgnored] = useState<Set<string>>(new Set())
-  // P0-1：Briefing 惰性（后端 30 分钟缓存 + 前端 staleTime 叠加；失败 → degraded）
-  const { data: brief } = useQuery({
-    queryKey: ['workbench', 'brief'],
-    queryFn: fetchBrief,
-    staleTime: 30 * 60 * 1000,
-  })
-
-  const taskCards = useMemo(() => board.sections.find(s => s.key === 'task')?.files ?? [], [board])
-  const today = board.today
-  const overdue = taskCards.filter(c => c.status === 'todo' && c.due && c.due < today)
-  const dueToday = taskCards.filter(c => c.status === 'todo' && c.due === today)
-  const inProgress = taskCards.filter(c => c.status === 'in_progress')
-
-  const acceptBrief = async (card: WbBriefCard) => {
-    if (card.type !== 'new_task') return
-    try {
-      // 采纳 → 写入待验证（ingest 幂等；message_id 前端生成）
-      const res = await ingestMessage(`brief-${Date.now()}`, '待验证', card.title)
-      if (res.ok) {
-        host.notify({ kind: 'success', message: '已加入待验证' })
-        invalidateBoard()
-        setIgnored(prev => new Set(prev).add(card.title))
-      } else {
-        host.notify({ kind: 'warning', message: res.error || '采纳失败' })
-      }
-    } catch (err) {
-      host.notify({ kind: 'error', message: String(err) })
-    }
-  }
-
-  const visibleCards = (brief?.cards ?? []).filter(c => !ignored.has(c.title)).slice(0, 5)
-  const emptyAll = overdue.length === 0 && dueToday.length === 0 && inProgress.length === 0
-
-  return (
-    <div className="flex flex-1 flex-col overflow-y-auto px-3 pb-3">
-      <div className="mx-auto flex w-full max-w-3xl flex-col gap-4 py-3">
-        {/* 规则区 */}
-        <div className="flex flex-col gap-1.5">
-          <div className="flex items-center gap-1.5">
-            <span className="text-[0.8125rem] font-semibold text-(--ui-text-danger)">⚠ 超期 ({overdue.length})</span>
-            {overdue.length > 0 && (
-              <button className="ml-auto text-[0.75rem] text-(--ui-accent) hover:underline" onClick={onGoBoard} type="button">进入看板 →</button>
-            )}
-          </div>
-          {overdue.slice(0, 5).map(c => <TodayCardRow key={c.file} card={c} onPreview={onPreview} />)}
-          {overdue.length > 5 && (
-            <span className="px-1 text-[0.75rem] text-(--ui-text-quaternary)">
-              还有 {overdue.length - 5} 条超期，<button className="text-(--ui-accent) hover:underline" onClick={onGoBoard} type="button">进入看板</button>
-            </span>
-          )}
-
-          <span className="mt-2 text-[0.8125rem] font-semibold text-(--ui-text-secondary)">▸ 今日到期 ({dueToday.length})</span>
-          {dueToday.slice(0, 5).map(c => <TodayCardRow key={c.file} card={c} onPreview={onPreview} />)}
-
-          <span className="mt-2 text-[0.8125rem] font-semibold text-(--ui-text-secondary)">▸ 进行中 ({inProgress.length})</span>
-          {inProgress.map(c => <TodayCardRow key={c.file} card={c} onPreview={onPreview} />)}
-
-          {emptyAll && (
-            <div className="rounded-md border border-dashed border-(--ui-stroke-tertiary) px-3 py-4 text-center">
-              <div className="text-[0.75rem] text-(--ui-text-secondary)">今天没有安排 🎉</div>
-              <div className="mt-1 text-[0.75rem] text-(--ui-text-quaternary)">
-                右下角「新建任务」或手机转发到 QQ 群自动收录
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* 建议区 */}
-        <div className="flex flex-col gap-1.5">
-          <div className="flex items-center gap-1.5">
-            <span className="text-[0.8125rem] font-semibold text-(--ui-text-secondary)">✨ 规则建议</span>
-            <span className="text-[0.75rem] text-(--ui-text-quaternary)">依据任务状态、截止日期和最近结果生成</span>
-          </div>
-          {brief?.degraded ? (
-            <div className="rounded-md border border-(--ui-stroke-tertiary) px-2.5 py-2 text-[0.75rem] text-(--ui-text-quaternary)">
-              规则建议暂不可用，请稍后重试
-            </div>
-          ) : visibleCards.length === 0 ? (
-            <div className="px-1 text-[0.75rem] text-(--ui-text-quaternary)">暂无建议</div>
-          ) : (
-            visibleCards.map(c => (
-              <BriefCardView
-                key={c.title}
-                card={c}
-                onAccept={c.type === 'new_task' ? () => void acceptBrief(c) : undefined}
-                onIgnore={() => setIgnored(prev => new Set(prev).add(c.title))}
-              />
-            ))
-          )}
-        </div>
-      </div>
-    </div>
-  )
-}
+// ── Today view（P0-1，B4）────────────────────────────────────────────
+// 2026-08-27 结构纠偏：HomeView/BriefCardView/TodayCardRow/HomeRegionCardList/
+// HOME_EMPTY_HINTS/BRIEF_TYPE_META 已整体抽取至 ./home.tsx（逐字搬移，行为零变更）。
 
 // ── Board page ────────────────────────────────────────────────────────
 
@@ -1408,18 +1237,9 @@ export function WorkbenchBoardPage() {
   const [bannerDismissedDate, setBannerDismissedDate] = useState(
     () => (typeof localStorage === 'undefined' ? '' : (localStorage.getItem('wbDeliveryBannerDismissedDate') || ''))
   )
-  // P0-1（B4）：今日视图 = 默认首页（不新增路由；看板态可切回）
-  const [showToday, setShowToday] = useState(true)
+  // P0-1（B4）v2（Task 3）：默认首页 = HomeView；旧七列看板/表格收进「旧版数据」
+  const [showLegacy, setShowLegacy] = useState(false)
   const [showConversations, setShowConversations] = useState(false)
-  // P0-1：待确认 badge = 待验证分区条目数（点击 → 看板并展开 thought 分区）
-  const thoughtSection = board?.sections.find(s => s.key === 'thought')
-  const pendingCount = thoughtSection
-    ? thoughtSection.files.reduce((n, f) => n + (f.entry_count || 0), 0)
-    : 0
-  const goThoughtBoard = () => {
-    setShowToday(false)
-    $collapsedSections.set({ ...$collapsedSections.get(), thought: false })
-  }
   // 视图模式（持久化在 storage；setViewMode 直接写 atom，Input 区下方按钮即见即切）
   const viewMode = useValue($viewMode)
   const setViewMode = (m: 'board' | 'table') => $viewMode.set(m)
@@ -1503,26 +1323,32 @@ export function WorkbenchBoardPage() {
     return <div className="flex h-full items-center justify-center text-sm text-(--ui-text-tertiary)">加载中…</div>
   }
   if (error) {
-    return <div className="flex h-full items-center justify-center text-sm text-(--ui-text-danger)">后端不可达</div>
+    return <div className="flex h-full items-center justify-center text-sm text-(--ui-red)">后端不可达</div>
   }
   if (!board) return null
 
   const deliverMissing = settings.data?.ok === true && !settings.data.config.deliver_target
   const showDeliveryBanner = !!deliverMissing && bannerDismissedDate !== board.today
   const healthData = health.data
-  const healthTone = {
-    green: 'bg-[#34d399]',
-    yellow: 'bg-[#fbbf24]',
-    red: 'bg-[#f87171]',
-    disabled: 'bg-[#94a3b8]',
-  }[healthData?.status ?? 'disabled']
+  // Task 6（2026-08-27）：三色语义单源化——绿/黄/红；灰只留在明细行。
+  // data 未到或未知档 fail-closed：灯点用中性占位，不发黄不发红。
+  const healthDot = health.isLoading
+    ? 'bg-(--ui-stroke-secondary)'
+    : healthData && (healthData.status === 'green' || healthData.status === 'yellow' || healthData.status === 'red')
+      ? { green: 'bg-[#34d399]', yellow: 'bg-[#fbbf24]', red: 'bg-[#f87171]' }[healthData.status]
+      : 'bg-(--ui-stroke-secondary)'
+  // 明细行允许灰色（未开始/忽略的检查项）
   const checkTone = (status: 'green' | 'yellow' | 'red' | 'disabled') => ({
     green: 'bg-[#34d399]',
     yellow: 'bg-[#fbbf24]',
     red: 'bg-[#f87171]',
     disabled: 'bg-[#94a3b8]',
   }[status])
-  const healthLabel = healthData?.label ?? '健康检查…'
+  const healthLabel = health.isLoading
+    ? '健康检查…'
+    : health.error
+      ? '暂时不可用'
+      : ({ green: '一切正常', yellow: '有点状况', red: '暂时不可用', disabled: '健康检查…' } as Record<string, string>)[healthData?.status ?? 'disabled']
 
   return (
     <div className="wb-root flex h-full flex-col">
@@ -1554,27 +1380,27 @@ export function WorkbenchBoardPage() {
       <div className="flex items-center gap-2 border-b border-(--ui-stroke-secondary) px-3 py-2">
         <Codicon name="checklist" size="1rem" />
         <span className="text-sm font-semibold">工作台</span>
-        {/* P0-1（B4）：今日 / 看板 切换（今日 = 默认首页） */}
+        {/* P0-1（B4）v2：首页 / 旧版数据 / 消息任务 切换（首页 = 默认） */}
         <div className="flex items-center rounded-md border border-(--ui-stroke-secondary) p-0.5">
           <button
             type="button"
             className={cn(
               'rounded px-2 py-0.5 text-[0.8125rem] transition-colors',
-              showToday && !showConversations ? 'bg-(--ui-accent) text-white' : 'text-(--ui-text-tertiary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-text-primary)'
+              !showLegacy && !showConversations ? 'bg-(--ui-accent) text-white' : 'text-(--ui-text-tertiary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-text-primary)'
             )}
-            onClick={() => { setShowToday(true); setShowConversations(false) }}
+            onClick={() => { setShowLegacy(false); setShowConversations(false) }}
           >
-            今日
+            首页
           </button>
           <button
             type="button"
             className={cn(
               'rounded px-2 py-0.5 text-[0.8125rem] transition-colors',
-              !showToday && !showConversations ? 'bg-(--ui-accent) text-white' : 'text-(--ui-text-tertiary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-text-primary)'
+              showLegacy && !showConversations ? 'bg-(--ui-accent) text-white' : 'text-(--ui-text-tertiary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-text-primary)'
             )}
-            onClick={() => { setShowToday(false); setShowConversations(false) }}
+            onClick={() => { setShowLegacy(true); setShowConversations(false) }}
           >
-            看板
+            旧版数据
           </button>
           <button
             type="button"
@@ -1582,7 +1408,7 @@ export function WorkbenchBoardPage() {
               'rounded px-2 py-0.5 text-[0.8125rem] transition-colors',
               showConversations ? 'bg-(--ui-accent) text-white' : 'text-(--ui-text-tertiary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-text-primary)'
             )}
-            onClick={() => { setShowToday(false); setShowConversations(true) }}
+            onClick={() => { setShowLegacy(false); setShowConversations(true) }}
           >
             消息任务
           </button>
@@ -1591,13 +1417,6 @@ export function WorkbenchBoardPage() {
           {board.totals.pending} Pending / {board.totals.total} Total
         </span>
         <div className="ml-auto flex items-center gap-2">
-          {/* P0-1（B4）：待确认 badge（仅今日视图显示；点击 → 看板 + 展开待验证） */}
-          {showToday && pendingCount > 0 && (
-            <Button size="sm" variant="outline" onClick={goThoughtBoard}>
-              <Codicon name="inbox" size="0.7rem" />
-              <span className="ml-1">待确认 {pendingCount}</span>
-            </Button>
-          )}
           {!multiMode && (
             <Button size="sm" variant="outline" onClick={() => { setSelected(new Set()); setMultiMode(true) }}>
               <Codicon name="checklist" size="0.7rem" />
@@ -1700,7 +1519,7 @@ export function WorkbenchBoardPage() {
               aria-expanded={showHealthDetails}
               title="查看链路健康详情"
             >
-              <span className={`size-2 rounded-full ${healthTone}`} />
+              <span className={`size-2 rounded-full ${healthDot}`} />
               <span>{healthLabel}</span>
               <Codicon name={showHealthDetails ? 'chevron-up' : 'chevron-down'} size="0.65rem" />
             </button>
@@ -1750,15 +1569,15 @@ export function WorkbenchBoardPage() {
         </div>
       )}
 
-      {/* P0-1（B4）：今日视图 = 默认首页；看板/表格 = 看板态 */}
+      {/* P0-1（B4）v2（Task 3）：HomeView = 默认首页；旧看板/表格 = 旧版数据态；消息任务独立 */}
       {showConversations ? (
         <ConversationIndexView
           items={conversations.data?.items ?? []}
           loading={conversations.isLoading}
           error={conversations.error}
         />
-      ) : showToday ? (
-        <TodayView board={board} onPreview={setPreviewCard} onGoBoard={() => setShowToday(false)} />
+      ) : !showLegacy ? (
+        <HomeView board={board} onPreview={setPreviewCard} onOpenLegacy={() => setShowLegacy(true)} />
       ) : (
         <>
           {/* Task 5.2 批次 3：Board / Table 两视图（同一 /board 数据；Phase 0-1：List 已删） */}
@@ -1776,7 +1595,7 @@ export function WorkbenchBoardPage() {
                   selected={selected}
                   onToggleSelect={toggleSelect}
                   conversationPlatformsByTask={conversationPlatformsByTask}
-                  onOpenConversations={() => { setShowToday(false); setShowConversations(true) }}
+                  onOpenConversations={() => { setShowLegacy(false); setShowConversations(true) }}
                 />
               ))}
             </div>
@@ -1934,7 +1753,7 @@ function SettingsDialog({ onClose }: { onClose: () => void }) {
                       type="button"
                       disabled={p.count > 0}
                       title={p.count > 0 ? `非空（${p.count} 个文件）不能删除` : '删除分区'}
-                      className="text-(--ui-text-tertiary) hover:text-(--ui-text-danger) disabled:cursor-not-allowed disabled:opacity-40"
+                      className="text-(--ui-text-tertiary) hover:text-(--ui-red) disabled:cursor-not-allowed disabled:opacity-40"
                       onClick={() => removePartition(p.name)}
                     >
                       <Codicon name="trash" size="0.8rem" />
@@ -2026,7 +1845,7 @@ function SettingsDialog({ onClose }: { onClose: () => void }) {
           </section>
 
           {errMsg && (
-            <div className="rounded border border-(--ui-stroke-danger) bg-(--ui-bg-elevated) px-2 py-1.5 text-[0.75rem] text-(--ui-text-danger)">
+            <div className="rounded border border-(--ui-red) bg-(--ui-bg-elevated) px-2 py-1.5 text-[0.75rem] text-(--ui-red)">
               {errMsg}
             </div>
           )}

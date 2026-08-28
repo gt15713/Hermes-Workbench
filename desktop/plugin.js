@@ -6,20 +6,109 @@ if (!node) {
   node.id = id;
   document.head.appendChild(node);
 }
-node.textContent = "/* Workbench plugin styles */\n.wb-root {\n  font-size: 0.875rem;\n  line-height: 1.55;\n}\n\n.wb-column {\n  scrollbar-width: thin;\n}\n\n.wb-card {\n  transition: border-color 0.15s ease, box-shadow 0.15s ease;\n}\n\n/* Expanded columns keep a readable minimum but share spare width. Empty\n   partitions compact to rails in the component unless the user overrides. */\n.wb-section {\n  flex: 1 0 16rem;\n  min-width: 16rem;\n  max-width: 28rem;\n}\n\n/* 2026-08-22 弹窗尺寸修复：宿主 Tailwind 无 w-[min(52rem,94vw)] 规则\n   （已核验 dist CSS），此前弹窗落回 SDK 默认 max-w-lg(32rem) 小窗。\n   宽度写在本文件，构建时内联注入，100% 生效。 */\n.wb-dialog {\n  width: min(52rem, 94vw);\n  max-width: 94vw;\n}\n\n/* Compact rails keep inactive partitions visible without competing with the\n   Bots sidebar or the right-docked Cronjobs pane. */\n.wb-section--collapsed {\n  min-width: 2rem;\n  max-width: 2rem;\n  background-color: color-mix(in srgb, var(--ui-bg-quinary) 78%, var(--ui-bg));\n  border: 1px solid color-mix(in srgb, var(--ui-stroke-secondary) 82%, transparent);\n  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ui-bg) 18%, transparent);\n}\n\n/* Action menus are viewport overlays; the explicit z-index also clears the\n   Cronjobs pane's right-docked surface. */\n.wb-menu-overlay {\n  position: fixed;\n  z-index: 10020;\n}\n\n/* Health details use the same opaque elevated surface as Workbench cards and\n   menus. Explicit plugin-owned styles avoid unsupported host utility tokens\n   such as bg-(--ui-bg-primary), which previously fell through to transparency. */\n.wb-health-popover {\n  background-color: var(--ui-bg-elevated);\n  border: 1px solid var(--ui-stroke-secondary);\n  box-shadow: 0 12px 32px color-mix(in srgb, var(--ui-bg) 68%, transparent);\n  backdrop-filter: none;\n  opacity: 1;\n}\n\n/* Pending badge pulse */\n@keyframes wb-pulse {\n  0%, 100% { opacity: 1; }\n  50% { opacity: 0.5; }\n}\n\n.wb-pending-badge {\n  animation: wb-pulse 2s ease-in-out infinite;\n}\n";
+node.textContent = `/* Workbench plugin styles */
+.wb-root {
+  font-size: 0.875rem;
+  line-height: 1.55;
+  /* P0（2026-08-27 目视二轮）：为面板内滑出抽屉提供定位上下文。
+     没有它，drawer 的 absolute 会逃逸到宿主更大容器——预览/历史
+     tab 因内容高度不同呈现"一个铺满一个缩条"。 */
+  position: relative;
+  overflow: hidden;
+}
+
+/* 用户拍板（2026-08-27 三轮复验后）：预览/运行历史两 tab 全幅覆盖——
+   回到最初用户认可的"铺满会话消息区"形态。 */
+.wb-drawer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  background: var(--ui-bg-elevated);
+  padding: 1.25rem;
+  color: var(--ui-text-primary);
+}
+
+.wb-column {
+  scrollbar-width: thin;
+}
+
+.wb-card {
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+/* Expanded columns keep a readable minimum but share spare width. Empty
+   partitions compact to rails in the component unless the user overrides. */
+.wb-section {
+  flex: 1 0 16rem;
+  min-width: 16rem;
+  max-width: 28rem;
+}
+
+/* 2026-08-22 弹窗尺寸修复：宿主 Tailwind 无 w-[min(52rem,94vw)] 规则
+   （已核验 dist CSS），此前弹窗落回 SDK 默认 max-w-lg(32rem) 小窗。
+   宽度写在本文件，构建时内联注入，100% 生效。 */
+.wb-dialog {
+  width: min(52rem, 94vw);
+  max-width: 94vw;
+}
+
+/* Compact rails keep inactive partitions visible without competing with the
+   Bots sidebar or the right-docked Cronjobs pane. */
+.wb-section--collapsed {
+  min-width: 2rem;
+  max-width: 2rem;
+  background-color: color-mix(in srgb, var(--ui-bg-quinary) 78%, var(--ui-bg));
+  border: 1px solid color-mix(in srgb, var(--ui-stroke-secondary) 82%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ui-bg) 18%, transparent);
+}
+
+/* Action menus are viewport overlays; the explicit z-index also clears the
+   Cronjobs pane's right-docked surface. */
+.wb-menu-overlay {
+  position: fixed;
+  z-index: 10020;
+}
+
+/* Health details use the same opaque elevated surface as Workbench cards and
+   menus. Explicit plugin-owned styles avoid unsupported host utility tokens
+   such as bg-(--ui-bg-primary), which previously fell through to transparency. */
+.wb-health-popover {
+  background-color: var(--ui-bg-elevated);
+  border: 1px solid var(--ui-stroke-secondary);
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--ui-bg) 68%, transparent);
+  backdrop-filter: none;
+  opacity: 1;
+}
+
+/* Pending badge pulse */
+@keyframes wb-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.wb-pending-badge {
+  animation: wb-pulse 2s ease-in-out infinite;
+}
+`;
 
 // desktop-src/plugin.tsx
 import {
-  cn as cn4,
-  Codicon as Codicon4,
-  host as host4,
+  cn as cn5,
+  Codicon as Codicon5,
+  host as host5,
   KEYBINDS_AREA,
   PALETTE_AREA,
   ROUTES_AREA,
   SIDEBAR_NAV_AREA,
   STATUSBAR_AREAS,
   Tip as Tip2,
-  useQuery as useQuery3
+  useQuery as useQuery4
 } from "@hermes/plugin-sdk";
 
 // desktop-src/api.ts
@@ -102,6 +191,10 @@ var reviewContent = (dir, file, action) => call("/content/review", {
   method: "POST",
   body: { dir, file, action }
 });
+var retryExtraction = (dir, file) => call("/content/retry-extraction", {
+  method: "POST",
+  body: { dir, file }
+});
 var completeTask = (dir, file) => call("/complete", {
   method: "POST",
   body: { dir, file }
@@ -167,25 +260,22 @@ var batchAction = (action, items) => call("/batch", {
 // desktop-src/board.tsx
 import {
   Button as Button2,
-  cn as cn3,
-  Codicon as Codicon3,
+  cn as cn4,
+  Codicon as Codicon4,
   Dialog,
   DialogContent,
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  host as host3,
+  host as host4,
   Input,
   useMutation as useMutation2,
-  useQuery as useQuery2,
+  useQuery as useQuery3,
   useValue as useValue2
 } from "@hermes/plugin-sdk";
-import { Component, useCallback, useEffect as useEffect2, useMemo as useMemo2, useRef as useRef2, useState as useState3 } from "react";
+import { Component, useCallback, useEffect as useEffect3, useMemo as useMemo3, useRef as useRef2, useState as useState4 } from "react";
 
 // desktop-src/types.ts
-function conversationActionLabel(ref) {
-  return ref.resume_mode === "original" && !!ref.session_id ? "打开原会话" : "摘要续接";
-}
 var PARTITION_META = {
   thought: { label: "待验证", codicon: "inbox", tone: "var(--ui-text-tertiary)" },
   video: { label: "待回看", codicon: "eye", tone: "#60a5fa" },
@@ -359,11 +449,82 @@ ${content}`.toLowerCase();
 import { Button, cn, host, useMutation, useQuery } from "@hermes/plugin-sdk";
 import { useState } from "react";
 
+// desktop-src/api-errors.ts
+var RULES = [
+  {
+    // 抽取钩子未注入：本会话后端没有配置抓取器（预期行为，非故障）
+    test: /extraction hook unavailable/i,
+    text: "这条内容目前无法自动抓取正文——本会话还没有配置抓取器。可以先「仅归档」保留原文，或重启桌面端后由 Agent 链路补抓。"
+  },
+  {
+    // 后端还没有这个路由 = 插件前后端版本代差，需要整端重启让 Python 侧重挂
+    test: /\b(40[45])\b|Method Not Allowed|Not Found/i,
+    text: "后端还没有这条功能入口（本次会话的后端早于最新构建）。重启一次 Hermes 桌面端就会生效；数据不受影响。"
+  },
+  {
+    test: /Failed to fetch|NetworkError|ERR_NETWORK|ECONNREFUSED|fetch failed/i,
+    text: "连不上工作台后端——请确认 Hermes 正在运行，稍后重试。"
+  },
+  {
+    test: /\b(40[13])\b|Unauthorized|Forbidden|permission/i,
+    text: "后端拒绝了这次操作（权限或登录态问题）。稍后重试，若持续出现请反馈。"
+  },
+  {
+    test: /\b50[0-4]\b|Internal Server Error|timeout|timed out/i,
+    text: "后端处理时出错了。请稍后重试；反复出现请带上这条提示反馈。"
+  }
+];
+function friendlyApiError(error) {
+  const raw = error instanceof Error ? error.message : String(error ?? "");
+  if (!raw) return "操作失败了，请稍后重试";
+  const looksInternal = /Error invoking remote method|TypeError|Error:\s*\d{3}|^\d{3}:\s|^[A-Z_]{6,}$|\bE_[A-Z]+\b|^[a-z_]+(\s[a-z_]+)*$/.test(raw);
+  if (!looksInternal) return raw;
+  for (const rule of RULES) {
+    if (rule.test.test(raw)) return rule.text;
+  }
+  return "操作没有成功。请稍后重试；若再次出现，请截图这条提示反馈。";
+}
+
 // desktop-src/content-review.ts
+function contentReceiptSteps(item) {
+  const source = item.original_url || "消息正文收录";
+  const steps = [
+    { label: "收进来", state: "done", detail: `${source}` }
+  ];
+  if (item.extraction_state === "failed") {
+    steps.push({ label: "审核", state: "error", detail: `抽取失败：${item.last_error || "原因未知"}（可重试抽取）` });
+  } else if (item.review_state === "pending") {
+    steps.push({
+      label: "审核",
+      state: "active",
+      detail: item.extraction_state === "pending" ? "抽取未完成——原文尚未就绪，可重试抽取" : "原文与来源已就绪"
+    });
+  } else {
+    steps.push({ label: "审核", state: "done", detail: "已审核并作出决定" });
+  }
+  switch (item.review_state) {
+    case "sunk":
+      steps.push({ label: "沉淀", state: "done", detail: `笔记：${item.note_path || ""}` });
+      break;
+    case "archived":
+      steps.push({ label: "沉淀", state: "skipped", detail: "仅归档——你选择不进知识库" });
+      break;
+    case "sink_queued":
+      steps.push({ label: "沉淀", state: "active", detail: `已创建摄入任务 ${item.sink_task_id || ""}，等 Hermes 回执` });
+      break;
+    case "sink_failed":
+      steps.push({ label: "沉淀", state: "error", detail: `沉淀失败：${item.last_error || "原因未知"}（可重试）` });
+      break;
+    default:
+      steps.push({ label: "沉淀", state: "todo", detail: "等你审核后决定：仅归档 或 沉淀到 Obsidian" });
+  }
+  return steps;
+}
 function contentReviewModel(item) {
+  const extractionFailed = item.extraction_state === "failed";
   if (item.review_state === "sunk") {
     return {
-      statusText: "已沉淀到 Obsidian",
+      statusText: extractionFailed ? "已沉淀（抽取历史有失败记录）" : "已沉淀到 Obsidian",
       notePath: item.note_path || null,
       error: null,
       actions: []
@@ -372,22 +533,31 @@ function contentReviewModel(item) {
   if (item.review_state === "archived") {
     return { statusText: "已归档", notePath: null, error: null, actions: [] };
   }
+  const actions = [];
+  if (extractionFailed) {
+    actions.push({ id: "retry_extraction", label: "重试抽取" });
+  }
   if (item.review_state === "sink_queued") {
     return {
       statusText: "等待 Hermes 摄入",
       notePath: null,
       error: null,
-      actions: [{ id: "launch_sink_task", label: "启动 / 重试 Hermes 摄入" }]
+      actions: [...actions, { id: "launch_sink_task", label: "启动 / 重试 Hermes 摄入" }]
     };
   }
+  let statusText = item.review_state === "sink_failed" ? "沉淀失败，可重试" : "待审核";
+  if (extractionFailed && !statusText.includes("抽取失败")) {
+    statusText = `抽取失败 · ${statusText}`;
+  }
+  actions.push(
+    { id: "archive_only", label: "仅归档" },
+    { id: "sink_to_obsidian", label: item.review_state === "sink_failed" ? "重试沉淀" : "沉淀到 Obsidian" }
+  );
   return {
-    statusText: item.review_state === "sink_failed" ? "沉淀失败，可重试" : "待审核",
+    statusText,
     notePath: null,
     error: item.last_error || null,
-    actions: [
-      { id: "archive_only", label: "仅归档" },
-      { id: "sink_to_obsidian", label: item.review_state === "sink_failed" ? "重试沉淀" : "沉淀到 Obsidian" }
-    ]
+    actions
   };
 }
 function launchQueuedContentItem(item, deps) {
@@ -465,6 +635,7 @@ function WbPreviewDrawer({
   onClose
 }) {
   const [tab, setTab] = useState("preview");
+  const [pendingSinkConfirm, setPendingSinkConfirm] = useState(false);
   const isReviewedContent = card.dir === "待验证" && card.file.startsWith("content-") && !card.entry_title;
   const { data, isLoading, error, refetch } = useQuery({
     queryKey: FILE_KEY(card.dir, card.file),
@@ -511,7 +682,7 @@ function WbPreviewDrawer({
       invalidateBoard();
       await refetchContent();
     },
-    onError: (error2) => host.notify({ kind: "error", message: String(error2.message || "操作失败，可重试") })
+    onError: (error2) => host.notify({ kind: "error", message: friendlyApiError(error2) })
   });
   const queuedLaunchMutation = useMutation({
     mutationFn: () => launchQueuedContentItem(contentItem, contentExecutionDeps),
@@ -520,130 +691,185 @@ function WbPreviewDrawer({
       invalidateBoard();
       await refetchContent();
     },
-    onError: (error2) => host.notify({ kind: "error", message: String(error2.message || "摄入任务启动失败；可再次重试") })
+    onError: (error2) => host.notify({ kind: "error", message: friendlyApiError(error2) })
+  });
+  const retryExtractionMutation = useMutation({
+    mutationFn: () => retryExtraction(contentItem.dir, contentItem.file),
+    onSuccess: async (result) => {
+      if (!result.ok) {
+        host.notify({ kind: "error", message: friendlyApiError(result.error || "抽取失败，可稍后重试") });
+        await refetchContent();
+        return;
+      }
+      host.notify({ kind: "success", message: "抽取完成，原文已更新" });
+      await refetchContent();
+    },
+    onError: (error2) => host.notify({ kind: "error", message: friendlyApiError(error2) })
   });
   const tabBtn = (active) => cn(
     "cursor-pointer rounded px-2 py-1 text-[0.8125rem] transition-colors",
     active ? "bg-(--ui-accent)/15 text-(--ui-accent)" : "text-(--ui-text-tertiary) hover:bg-(--ui-stroke-secondary)"
   );
-  return /* @__PURE__ */ jsx(
-    "div",
-    {
-      className: cn(
-        "fixed inset-0 z-[10001] flex items-center justify-center bg-black/40"
-      ),
-      onClick: onClose,
-      children: /* @__PURE__ */ jsxs(
-        "div",
-        {
-          className: "flex h-[80vh] w-[560px] max-w-[92vw] flex-col rounded-xl border border-(--ui-stroke-secondary)\n                   bg-(--ui-bg-elevated) p-5 text-(--ui-text-primary) shadow-[0_20px_60px_rgba(0,0,0,0.5)]",
-          onClick: (e) => e.stopPropagation(),
-          role: "dialog",
-          "aria-modal": "true",
-          "aria-label": "文件预览",
-          children: [
-            /* @__PURE__ */ jsxs("div", { className: "mb-3 flex items-center justify-between", children: [
-              /* @__PURE__ */ jsx("span", { className: "text-base font-semibold", children: card.title || card.file }),
-              /* @__PURE__ */ jsx(
-                "button",
-                {
-                  type: "button",
-                  "aria-label": "关闭",
-                  className: "cursor-pointer border-none bg-transparent text-base text-(--ui-text-tertiary) hover:text-(--ui-text-primary)",
-                  onClick: onClose,
-                  children: "✕"
-                }
-              )
-            ] }),
-            /* @__PURE__ */ jsxs("div", { className: "mb-2 flex items-center gap-1 border-b border-(--ui-stroke-secondary) pb-1", children: [
-              /* @__PURE__ */ jsx("button", { type: "button", className: tabBtn(tab === "preview"), onClick: () => setTab("preview"), children: "预览" }),
-              /* @__PURE__ */ jsx("button", { type: "button", className: tabBtn(tab === "history"), onClick: () => setTab("history"), children: "运行历史" }),
-              /* @__PURE__ */ jsx("div", { className: "ml-auto" })
-            ] }),
-            tab === "preview" ? /* @__PURE__ */ jsxs("div", { className: "flex-1 overflow-y-auto text-[0.75rem] leading-relaxed", children: [
-              reviewModel && contentItem && /* @__PURE__ */ jsxs("section", { className: "mb-3 rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-secondary) p-3", children: [
-                /* @__PURE__ */ jsxs("div", { className: "font-medium", children: [
-                  "内容审核 · ",
-                  reviewModel.statusText
-                ] }),
-                contentItem.original_url && /* @__PURE__ */ jsxs("div", { className: "mt-1 break-all text-(--ui-text-tertiary)", children: [
-                  "来源：",
-                  contentItem.original_url
-                ] }),
-                reviewModel.error && /* @__PURE__ */ jsx("div", { className: "mt-1 text-(--ui-text-danger)", children: reviewModel.error }),
-                reviewModel.notePath && /* @__PURE__ */ jsxs("div", { className: "mt-1 break-all text-(--ui-text-secondary)", children: [
-                  "笔记：",
-                  reviewModel.notePath
-                ] }),
-                reviewModel.actions.length > 0 && /* @__PURE__ */ jsx("div", { className: "mt-3 flex gap-2", children: reviewModel.actions.map((action) => /* @__PURE__ */ jsx(
-                  Button,
+  return (
+    // P0（2026-08-27 目视二轮）：视口级 fixed 居中弹窗会被宿主右栏原生
+    // 表面遮挡（z-index 无法越过），且宽度压迫工作台。改为官方 kanban
+    // 同款「面板内右侧滑出抽屉」：锚定在最近 positioned 祖先（Workbench
+    // 面板）上，与右栏物理隔离，宽度固定不挤压内容。
+    /* @__PURE__ */ jsxs(
+      "div",
+      {
+        className: "wb-drawer",
+        role: "dialog",
+        "aria-modal": "false",
+        "aria-label": "文件预览",
+        children: [
+          /* @__PURE__ */ jsxs("div", { className: "mb-3 flex items-center justify-between", children: [
+            /* @__PURE__ */ jsx("span", { className: "text-base font-semibold", children: card.title || card.file }),
+            /* @__PURE__ */ jsx(
+              "button",
+              {
+                type: "button",
+                "aria-label": "关闭",
+                className: "cursor-pointer border-none bg-transparent text-base text-(--ui-text-tertiary) hover:text-(--ui-text-primary)",
+                onClick: onClose,
+                children: "✕"
+              }
+            )
+          ] }),
+          /* @__PURE__ */ jsxs("div", { className: "mb-2 flex items-center gap-1 border-b border-(--ui-stroke-secondary) pb-1", children: [
+            /* @__PURE__ */ jsx("button", { type: "button", className: tabBtn(tab === "preview"), onClick: () => setTab("preview"), children: "预览" }),
+            /* @__PURE__ */ jsx("button", { type: "button", className: tabBtn(tab === "history"), onClick: () => setTab("history"), children: "运行历史" }),
+            /* @__PURE__ */ jsx("div", { className: "ml-auto" })
+          ] }),
+          tab === "preview" ? /* @__PURE__ */ jsxs("div", { className: "flex-1 overflow-y-auto text-[0.75rem] leading-relaxed", children: [
+            reviewModel && contentItem && /* @__PURE__ */ jsxs("section", { className: "mb-3 rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-secondary) p-3", children: [
+              /* @__PURE__ */ jsxs("div", { className: "font-medium", children: [
+                "内容审核 · ",
+                reviewModel.statusText
+              ] }),
+              /* @__PURE__ */ jsx("ol", { className: "mt-2 space-y-1", children: contentReceiptSteps(contentItem).map((step) => /* @__PURE__ */ jsxs("li", { className: "flex items-start gap-2 text-[0.75rem]", children: [
+                /* @__PURE__ */ jsx(
+                  "span",
                   {
-                    size: "xs",
-                    variant: action.id === "archive_only" ? "outline" : "secondary",
-                    disabled: reviewMutation.isPending || queuedLaunchMutation.isPending,
-                    onClick: () => {
-                      if (action.id === "launch_sink_task") {
-                        queuedLaunchMutation.mutate();
-                        return;
-                      }
-                      if (action.id === "sink_to_obsidian" && !window.confirm("确认将这条已审核内容沉淀到 Obsidian？")) return;
-                      reviewMutation.mutate(action.id);
+                    style: {
+                      flexShrink: 0,
+                      color: step.state === "error" ? "var(--ui-red)" : step.state === "done" ? "var(--ui-green, var(--ui-text-quaternary))" : step.state === "active" ? "var(--ui-accent)" : "var(--ui-text-tertiary)"
                     },
-                    children: action.label
-                  },
-                  action.id
-                )) })
+                    children: step.state === "error" ? "✖" : step.state === "done" ? "✔" : step.state === "active" ? "▶" : step.state === "skipped" ? "⊘" : "○"
+                  }
+                ),
+                /* @__PURE__ */ jsx("span", { className: "shrink-0 font-medium text-(--ui-text-primary)", children: step.label }),
+                /* @__PURE__ */ jsx(
+                  "span",
+                  {
+                    className: "min-w-0 break-all",
+                    style: step.state === "error" ? { color: "var(--ui-red)", fontWeight: 500 } : void 0,
+                    children: step.detail
+                  }
+                )
+              ] }, step.label)) }),
+              contentItem.original_url && /* @__PURE__ */ jsxs("div", { className: "mt-1 break-all text-(--ui-text-tertiary)", children: [
+                "来源：",
+                contentItem.original_url
               ] }),
-              /* @__PURE__ */ jsxs("div", { className: "whitespace-pre-wrap", children: [
-                isLoading && /* @__PURE__ */ jsx("div", { className: "flex h-full items-center justify-center text-(--ui-text-tertiary)", children: "加载中…" }),
-                error && /* @__PURE__ */ jsxs("div", { className: "flex h-full flex-col items-center justify-center gap-2 text-(--ui-text-danger)", children: [
-                  /* @__PURE__ */ jsx("span", { children: String(error.message || "加载失败") }),
-                  /* @__PURE__ */ jsx(Button, { size: "sm", variant: "secondary", onClick: () => void refetch(), children: "重试" })
-                ] }),
-                data && /* @__PURE__ */ jsx(PreviewBody, { content: data.content || "（空）", focusTitle: card.entry_title || null })
-              ] })
-            ] }) : /* @__PURE__ */ jsxs("div", { className: "flex-1 overflow-y-auto text-[0.8125rem]", children: [
-              evLoading && /* @__PURE__ */ jsx("div", { className: "flex h-full items-center justify-center text-(--ui-text-tertiary)", children: "加载中…" }),
-              evError && /* @__PURE__ */ jsxs("div", { className: "flex h-full flex-col items-center justify-center gap-2 text-(--ui-text-danger)", children: [
-                /* @__PURE__ */ jsx("span", { children: String(evError.message || "运行历史加载失败") }),
-                /* @__PURE__ */ jsx(Button, { size: "sm", variant: "secondary", onClick: () => void refetchEvents(), children: "重试" })
+              reviewModel.error && /* @__PURE__ */ jsx("div", { className: "mt-1 text-(--ui-red)", children: reviewModel.error }),
+              reviewModel.notePath && /* @__PURE__ */ jsxs("div", { className: "mt-1 break-all text-(--ui-text-secondary)", children: [
+                "笔记：",
+                reviewModel.notePath
               ] }),
-              !evLoading && !evError && (!events || events.entries.length === 0) && /* @__PURE__ */ jsx("div", { className: "flex h-full items-center justify-center text-(--ui-text-quaternary)", children: "暂无运行历史" }),
-              !evLoading && !evError && events && events.entries.length > 0 && /* @__PURE__ */ jsx("ul", { className: "flex flex-col gap-1", children: events.entries.map((e) => /* @__PURE__ */ jsxs(
-                "li",
-                {
-                  className: "flex items-center gap-2 rounded border border-(--ui-stroke-tertiary) px-2 py-1.5",
-                  children: [
-                    /* @__PURE__ */ jsx("span", { className: "shrink-0 font-mono text-[0.75rem] text-(--ui-text-quaternary)", children: String(e.ts).slice(0, 19) }),
-                    /* @__PURE__ */ jsx("span", { className: "shrink-0 rounded bg-(--ui-accent)/10 px-1.5 py-0.5 font-medium text-(--ui-accent)", children: e.kind }),
-                    e.payload && /* @__PURE__ */ jsx("span", { className: "min-w-0 flex-1 truncate text-(--ui-text-secondary)", children: e.payload })
-                  ]
-                },
-                e.id
-              )) })
-            ] }),
-            /* @__PURE__ */ jsxs("div", { className: "mt-3 flex items-center justify-end gap-2", children: [
-              /* @__PURE__ */ jsx(Button, { size: "xs", variant: "outline", onClick: onClose, children: "关闭" }),
-              /* @__PURE__ */ jsx(
+              reviewModel.actions.length > 0 && /* @__PURE__ */ jsx("div", { className: "mt-3 flex gap-2", children: pendingSinkConfirm ? (
+                // P0：自绘确认条——明确两键，替代被吞的 window.confirm
+                /* @__PURE__ */ jsxs("div", { className: "flex w-full items-center gap-2 rounded-md border border-(--ui-accent)/40 bg-(--ui-accent)/10 px-2 py-1.5", children: [
+                  /* @__PURE__ */ jsx("span", { className: "text-[0.75rem] text-(--ui-text-primary)", children: "确认沉淀到 Obsidian？" }),
+                  /* @__PURE__ */ jsx(
+                    Button,
+                    {
+                      size: "xs",
+                      disabled: reviewMutation.isPending,
+                      onClick: () => {
+                        setPendingSinkConfirm(false);
+                        reviewMutation.mutate("sink_to_obsidian");
+                      },
+                      children: "确认沉淀"
+                    }
+                  ),
+                  /* @__PURE__ */ jsx(Button, { size: "xs", variant: "outline", onClick: () => setPendingSinkConfirm(false), children: "取消" })
+                ] })
+              ) : reviewModel.actions.map((action) => /* @__PURE__ */ jsx(
                 Button,
                 {
                   size: "xs",
-                  onClick: async () => {
-                    try {
-                      await navigator.clipboard.writeText(card.path);
-                      host.notify({ kind: "success", message: "路径已复制" });
-                    } catch {
-                      host.notify({ kind: "error", message: "复制失败" });
+                  variant: action.id === "archive_only" ? "outline" : action.id === "retry_extraction" ? "secondary" : "secondary",
+                  disabled: reviewMutation.isPending || queuedLaunchMutation.isPending || retryExtractionMutation.isPending,
+                  onClick: () => {
+                    if (action.id === "launch_sink_task") {
+                      queuedLaunchMutation.mutate();
+                      return;
                     }
+                    if (action.id === "retry_extraction") {
+                      retryExtractionMutation.mutate();
+                      return;
+                    }
+                    if (action.id === "sink_to_obsidian") {
+                      setPendingSinkConfirm(true);
+                      return;
+                    }
+                    reviewMutation.mutate(action.id);
                   },
-                  children: "复制路径"
-                }
-              )
+                  children: action.label
+                },
+                action.id
+              )) })
+            ] }),
+            /* @__PURE__ */ jsxs("div", { className: "whitespace-pre-wrap", children: [
+              isLoading && /* @__PURE__ */ jsx("div", { className: "flex h-full items-center justify-center text-(--ui-text-tertiary)", children: "加载中…" }),
+              error && /* @__PURE__ */ jsxs("div", { className: "flex h-full flex-col items-center justify-center gap-2 text-(--ui-red)", children: [
+                /* @__PURE__ */ jsx("span", { children: String(error.message || "加载失败") }),
+                /* @__PURE__ */ jsx(Button, { size: "sm", variant: "secondary", onClick: () => void refetch(), children: "重试" })
+              ] }),
+              data && /* @__PURE__ */ jsx(PreviewBody, { content: data.content || "（空）", focusTitle: card.entry_title || null })
             ] })
-          ]
-        }
-      )
-    }
+          ] }) : /* @__PURE__ */ jsxs("div", { className: "flex-1 overflow-y-auto text-[0.8125rem]", children: [
+            evLoading && /* @__PURE__ */ jsx("div", { className: "flex h-full items-center justify-center text-(--ui-text-tertiary)", children: "加载中…" }),
+            evError && /* @__PURE__ */ jsxs("div", { className: "flex h-full flex-col items-center justify-center gap-2 text-(--ui-red)", children: [
+              /* @__PURE__ */ jsx("span", { children: String(evError.message || "运行历史加载失败") }),
+              /* @__PURE__ */ jsx(Button, { size: "sm", variant: "secondary", onClick: () => void refetchEvents(), children: "重试" })
+            ] }),
+            !evLoading && !evError && (!events || events.entries.length === 0) && /* @__PURE__ */ jsx("div", { className: "flex h-full items-center justify-center text-(--ui-text-quaternary)", children: "暂无运行历史" }),
+            !evLoading && !evError && events && events.entries.length > 0 && /* @__PURE__ */ jsx("ul", { className: "flex flex-col gap-1", children: events.entries.map((e) => /* @__PURE__ */ jsxs(
+              "li",
+              {
+                className: "flex items-center gap-2 rounded border border-(--ui-stroke-tertiary) px-2 py-1.5",
+                children: [
+                  /* @__PURE__ */ jsx("span", { className: "shrink-0 font-mono text-[0.75rem] text-(--ui-text-quaternary)", children: String(e.ts).slice(0, 19) }),
+                  /* @__PURE__ */ jsx("span", { className: "shrink-0 rounded bg-(--ui-accent)/10 px-1.5 py-0.5 font-medium text-(--ui-accent)", children: e.kind }),
+                  e.payload && /* @__PURE__ */ jsx("span", { className: "min-w-0 flex-1 truncate text-(--ui-text-secondary)", children: e.payload })
+                ]
+              },
+              e.id
+            )) })
+          ] }),
+          /* @__PURE__ */ jsxs("div", { className: "mt-3 flex items-center justify-end gap-2", children: [
+            /* @__PURE__ */ jsx(Button, { size: "xs", variant: "outline", onClick: onClose, children: "关闭" }),
+            /* @__PURE__ */ jsx(
+              Button,
+              {
+                size: "xs",
+                onClick: async () => {
+                  try {
+                    await navigator.clipboard.writeText(card.path);
+                    host.notify({ kind: "success", message: "路径已复制" });
+                  } catch {
+                    host.notify({ kind: "error", message: "复制失败" });
+                  }
+                },
+                children: "复制路径"
+              }
+            )
+          ] })
+        ]
+      }
+    )
   );
 }
 
@@ -775,7 +1001,7 @@ function TableBoardView({ board, onPreview }) {
                 /* @__PURE__ */ jsx2("td", { className: "px-2 py-1.5 whitespace-nowrap", children: /* @__PURE__ */ jsx2(PriorityBadge, { value: card.priority }) }),
                 /* @__PURE__ */ jsx2("td", { className: "px-2 py-1.5 whitespace-nowrap", children: /* @__PURE__ */ jsx2(SizeBadge, { value: card.size }) }),
                 /* @__PURE__ */ jsx2("td", { className: "px-2 py-1.5", children: card.tags && card.tags.length > 0 ? /* @__PURE__ */ jsx2("span", { className: "flex flex-wrap gap-1", children: card.tags.map((t) => /* @__PURE__ */ jsx2("span", { className: "rounded bg-(--ui-accent)/10 px-1 text-[0.75rem] text-(--ui-accent)", children: t }, t)) }) : /* @__PURE__ */ jsx2("span", { className: "text-(--ui-text-quaternary)", children: "—" }) }),
-                /* @__PURE__ */ jsxs2("td", { className: cn2("px-2 py-1.5 whitespace-nowrap", isOverdue(card.due) ? "font-semibold text-(--ui-text-danger)" : "text-(--ui-text-secondary)"), children: [
+                /* @__PURE__ */ jsxs2("td", { className: cn2("px-2 py-1.5 whitespace-nowrap", isOverdue(card.due) ? "font-semibold text-(--ui-red)" : "text-(--ui-text-secondary)"), children: [
                   card.due || "—",
                   isOverdue(card.due) && " ⚠"
                 ] }),
@@ -809,9 +1035,465 @@ function ViewSwitcher({ mode, onChange }) {
   )) });
 }
 
+// desktop-src/home.tsx
+import { cn as cn3, Codicon as Codicon2, host as host2, useQuery as useQuery2 } from "@hermes/plugin-sdk";
+import { useEffect, useMemo as useMemo2, useState as useState2 } from "react";
+
+// desktop-src/home-model.ts
+var REVIEWABLE_SECTIONS = /* @__PURE__ */ new Set(["thought", "video", "psych", "dream"]);
+var COMPLETED_STATUSES = /* @__PURE__ */ new Set(["completed", "ingested", "accepted", "ignored", "done", "abandoned", "cleared"]);
+var ATTENTION_STATUSES = /* @__PURE__ */ new Set(["waiting_user", "failed"]);
+var ACTIVE_STATUSES = /* @__PURE__ */ new Set(["in_progress", "active", "processing"]);
+var INBOX_STATUSES = /* @__PURE__ */ new Set(["pending", "queued", "todo"]);
+var HOME_STATUS_VOCAB = {
+  inbox: INBOX_STATUSES,
+  attention: ATTENTION_STATUSES,
+  active: ACTIVE_STATUSES,
+  completed: COMPLETED_STATUSES
+};
+function isFailedExecution(card) {
+  return (card.execution_result || "").trim().toLowerCase() === "failure";
+}
+function classifyCard(sectionKey, card) {
+  if (sectionKey === "done") return "recent";
+  const status = (card.status || "").trim().toLowerCase();
+  if (COMPLETED_STATUSES.has(status)) return "recent";
+  if (ATTENTION_STATUSES.has(status)) return "attention";
+  if (ACTIVE_STATUSES.has(status)) return isFailedExecution(card) ? "attention" : "today";
+  if (INBOX_STATUSES.has(status) || status === "") return isFailedExecution(card) ? "attention" : "inbox";
+  return "error";
+}
+function keyOf(card) {
+  return `${card.dir}/${card.file}`;
+}
+function buildHomeModel(board, _brief, _health) {
+  const todayRegion = { id: "today", count: 0, items: [] };
+  const inboxRegion = { id: "inbox", count: 0, items: [] };
+  const attentionItems = [];
+  const recentRegion = { id: "recent", count: 0, items: [] };
+  const contractErrors = [];
+  const skipped = [];
+  for (const section of board.sections ?? []) {
+    if (section.key === "trash") {
+      for (const f of section.files ?? []) skipped.push({ dir: f.dir, file: f.file, why: "trash-partition" });
+      continue;
+    }
+    const isReviewable = REVIEWABLE_SECTIONS.has(section.key);
+    for (const card of section.files ?? []) {
+      if (isReviewable && (card.entry_count ?? 0) === 0 && (card.entries?.length ?? 0) === 0) {
+        skipped.push({ dir: card.dir, file: card.file, why: "empty-shell" });
+        continue;
+      }
+      if (isReviewable) {
+        const verdict = classifyCard(section.key, card);
+        if (verdict === "error") {
+          contractErrors.push({ card, reason: `未知状态 "${card.status}"（分区 ${section.key}）` });
+          continue;
+        }
+        if (verdict === "recent") {
+          recentRegion.items.push({ card });
+        } else {
+          ;
+          (verdict === "attention" ? attentionItems : verdict === "today" ? todayRegion.items : inboxRegion.items).push({ card });
+        }
+        continue;
+      }
+      const dest = classifyCard(section.key, card);
+      if (dest === "error") {
+        contractErrors.push({ card, reason: `未知状态 "${card.status}"` });
+        continue;
+      }
+      if (dest === "inbox") {
+        inboxRegion.items.push({ card });
+        continue;
+      }
+      if (dest === "today") {
+        todayRegion.items.push({ card });
+        continue;
+      }
+      if (dest === "attention") {
+        attentionItems.push({ card });
+        continue;
+      }
+      recentRegion.items.push({ card });
+    }
+  }
+  const promoted = [];
+  for (const item of inboxRegion.items) {
+    if (item.card.due && /^\d{4}-\d{2}-\d{2}$/.test(item.card.due) && item.card.due === board.today) {
+      promoted.push(item.card);
+    }
+  }
+  if (promoted.length > 0) {
+    const promotedSet = new Set(promoted.map(keyOf));
+    inboxRegion.items = inboxRegion.items.filter((i) => !promotedSet.has(keyOf(i.card)));
+    for (const c of promoted) todayRegion.items.push({ card: c });
+  }
+  const needsDecision = attentionItems.filter(({ card }) => {
+    const s = (card.status || "").trim().toLowerCase();
+    return s === "waiting_user" || !ATTENTION_STATUSES.has(s) && !isFailedExecution(card);
+  }).length;
+  const failures = attentionItems.length - needsDecision;
+  const regions = [
+    todayRegion,
+    inboxRegion,
+    { id: "attention", count: attentionItems.length, items: attentionItems },
+    recentRegion
+  ];
+  for (const r of regions) r.count = r.items.length;
+  return {
+    regions,
+    contractErrors,
+    skipped,
+    totals: {
+      today: todayRegion.count,
+      inbox: inboxRegion.count,
+      attention: { needsDecision, failures, total: attentionItems.length },
+      recent: recentRegion.count,
+      contractErrors: contractErrors.length
+    }
+  };
+}
+
+// desktop-src/card-action.ts
+var STATUS_PRIMARY = {
+  inbox: { kind: "start", label: "开始处理", reason: "新进件还没有开过工——从这一步启动它" },
+  active: { kind: "progress", label: "查看进度", reason: "正在执行中，看最新进展" },
+  attention: { kind: "confirm", label: "确认处理", reason: "需要你拍板或修复后才能继续" },
+  completed: { kind: "evidence", label: "查看证据", reason: "已完结，可核对产物与沉淀记录" }
+};
+function homeCardPrimaryAction(card) {
+  const status = (card.status || "").trim().toLowerCase();
+  if (isFailedExecution({ execution_result: card.execution_result })) {
+    return { ...STATUS_PRIMARY.attention, enabled: true };
+  }
+  if (HOME_STATUS_VOCAB.inbox.has(status) || status === "") {
+    return { ...STATUS_PRIMARY.inbox, enabled: true };
+  }
+  if (HOME_STATUS_VOCAB.active.has(status)) {
+    return { ...STATUS_PRIMARY.active, enabled: true };
+  }
+  if (HOME_STATUS_VOCAB.attention.has(status)) {
+    return { ...STATUS_PRIMARY.attention, enabled: true };
+  }
+  if (status === "completed" || status === "ingested" || status === "accepted" || status === "ignored" || status === "done") {
+    return { ...STATUS_PRIMARY.completed, enabled: true };
+  }
+  return null;
+}
+function conversationPrimaryAction(ref) {
+  const sessionId = (ref.session_id || "").trim();
+  if (ref.resume_mode === "original" && sessionId) {
+    return { kind: "open_original", label: "打开原会话", enabled: true, reason: `官方会话 ${sessionId.slice(0, 12)}… 可直达` };
+  }
+  return { kind: "resume_summary", label: "摘要续接", enabled: true, reason: "无稳定原会话引用，用摘要继续最稳" };
+}
+
+// desktop-src/home-search.ts
+function searchResultToCard(r, root) {
+  return {
+    dir: r.dir,
+    file: r.file,
+    path: `${root.replace(/\/+$/, "")}/${r.dir}/${r.file}`,
+    title: r.title,
+    status: r.status,
+    entries: [],
+    entry_count: r.entry_count,
+    priority: r.priority,
+    size: r.size,
+    tags: r.tags
+  };
+}
+function homeSearchFeedback(input) {
+  if (!input.hasQuery) return { kind: "idle", text: "" };
+  const err = input.error;
+  const msg = err instanceof Error ? err.message : typeof err === "string" ? err : "";
+  if (err === "unreachable") {
+    return {
+      kind: "unreachable",
+      text: "后端暂时不可达——请稍候重试；若持续出现请检查 Gateway 状态。",
+      retry: true
+    };
+  }
+  if (err) {
+    if (msg.includes("超时")) {
+      return { kind: "timeout", text: `搜索超时：${msg}。可再试一次或缩短关键词。`, retry: true };
+    }
+    return { kind: "failure", text: `搜索失败：${msg || "未知错误"}。可重试。`, retry: true };
+  }
+  if (input.isLoading) return { kind: "loading", text: "正在搜索…" };
+  if (input.data && input.data.results.length === 0) {
+    return { kind: "empty", text: "没有匹配的结果。换个关键词，或用「旧版数据」里的筛选器试试。" };
+  }
+  return { kind: "results", text: "" };
+}
+
+// desktop-src/home.tsx
+import { Fragment as Fragment3, jsx as jsx3, jsxs as jsxs3 } from "react/jsx-runtime";
+var BRIEF_TYPE_META = {
+  new_task: { icon: "lightbulb", label: "新任务" },
+  duplicate: { icon: "warning", label: "重复" },
+  blocked: { icon: "stop", label: "阻塞" },
+  overdue: { icon: "calendar", label: "过期重估" },
+  decision: { icon: "question", label: "需决策" }
+};
+function TodayCardRow({ card, onPreview }) {
+  const tone = STATUS_TONE[card.status] || "var(--ui-text-tertiary)";
+  const prio = priorityMeta(card.priority || "");
+  const primary = homeCardPrimaryAction(card);
+  return /* @__PURE__ */ jsxs3(
+    "div",
+    {
+      className: "flex w-full items-center gap-2 rounded-md border border-(--ui-stroke-secondary) px-2.5 py-1.5 transition-colors hover:border-(--ui-accent)",
+      onClick: () => onPreview(card),
+      role: "button",
+      tabIndex: 0,
+      onKeyDown: (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onPreview(card);
+        }
+      },
+      children: [
+        /* @__PURE__ */ jsx3("span", { className: "size-1.5 shrink-0 rounded-full", style: { background: tone } }),
+        prio && /* @__PURE__ */ jsx3("span", { className: "h-3 w-0.5 shrink-0 rounded", style: { background: prio.fg } }),
+        /* @__PURE__ */ jsx3("span", { className: "min-w-0 flex-1 truncate text-[0.75rem] font-medium text-(--ui-text-primary)", children: card.title || card.file.replace(/\.md$/, "") }),
+        card.due && /* @__PURE__ */ jsx3("span", { className: cn3("shrink-0 text-[0.75rem]", isOverdue(card.due) ? "font-semibold text-(--ui-red)" : "text-(--ui-text-tertiary)"), children: card.due }),
+        primary && /* @__PURE__ */ jsxs3(
+          "button",
+          {
+            type: "button",
+            "data-wb-primary": primary.kind,
+            title: primary.reason,
+            className: "shrink-0 rounded border border-(--ui-accent)/40 bg-(--ui-accent)/10 px-2 py-0.5 text-[0.75rem] font-medium text-(--ui-accent) hover:bg-(--ui-accent)/20",
+            onClick: (e) => {
+              e.stopPropagation();
+              onPreview(card);
+            },
+            children: [
+              primary.label,
+              /* @__PURE__ */ jsx3("span", { className: "ml-1 hidden text-[0.6875rem] font-normal text-(--ui-text-quaternary) sm:inline", children: "为什么" })
+            ]
+          }
+        )
+      ]
+    }
+  );
+}
+function BriefCardView({ card, onAccept, onIgnore }) {
+  const meta = BRIEF_TYPE_META[card.type] ?? { icon: "info", label: card.type };
+  return /* @__PURE__ */ jsxs3("div", { className: "flex items-start gap-2 rounded-md border border-(--ui-stroke-secondary) px-2.5 py-2", children: [
+    /* @__PURE__ */ jsx3(Codicon2, { name: meta.icon, size: "0.8rem", className: "mt-0.5 shrink-0", style: { color: "var(--ui-accent)" } }),
+    /* @__PURE__ */ jsxs3("div", { className: "min-w-0 flex-1", children: [
+      /* @__PURE__ */ jsx3("div", { className: "text-[0.8125rem] font-semibold text-(--ui-text-primary)", children: card.title }),
+      /* @__PURE__ */ jsx3("div", { className: "mt-0.5 text-[0.75rem] text-(--ui-text-tertiary)", children: card.reason }),
+      /* @__PURE__ */ jsx3("div", { className: "mt-0.5 text-[0.6875rem] font-medium text-(--ui-accent)", children: "建议动作：查看右侧主按钮；其余操作在详情抽屉" }),
+      /* @__PURE__ */ jsxs3("details", { className: "mt-1 text-[0.75rem] text-(--ui-text-quaternary)", children: [
+        /* @__PURE__ */ jsx3("summary", { className: "cursor-pointer", children: "查看依据" }),
+        /* @__PURE__ */ jsx3("ul", { className: "mt-1 list-disc pl-4", children: card.evidence.map((item) => /* @__PURE__ */ jsx3("li", { children: item }, item)) })
+      ] }),
+      /* @__PURE__ */ jsxs3("div", { className: "mt-1 flex items-center gap-1", children: [
+        onAccept && /* @__PURE__ */ jsx3(
+          "button",
+          {
+            className: "rounded bg-(--ui-accent)/15 px-2 py-1 text-[0.75rem] text-(--ui-accent) hover:bg-(--ui-accent)/25",
+            onClick: onAccept,
+            type: "button",
+            children: "采纳"
+          }
+        ),
+        /* @__PURE__ */ jsx3(
+          "button",
+          {
+            className: "rounded px-2 py-1 text-[0.75rem] text-(--ui-text-tertiary) hover:bg-(--ui-stroke-secondary)",
+            onClick: onIgnore,
+            type: "button",
+            children: "忽略"
+          }
+        )
+      ] })
+    ] }),
+    /* @__PURE__ */ jsx3("span", { className: "shrink-0 rounded bg-(--ui-bg-quinary) px-1 py-0.5 text-[0.75rem] text-(--ui-text-quaternary)", children: "规则建议" })
+  ] });
+}
+function HomeRegionCardList({ items, onPreview }) {
+  return /* @__PURE__ */ jsxs3(Fragment3, { children: [
+    items.slice(0, 8).map(({ card }) => /* @__PURE__ */ jsx3(TodayCardRow, { card, onPreview }, `${card.dir}/${card.file}`)),
+    items.length > 8 && /* @__PURE__ */ jsxs3("span", { className: "px-1 text-[0.75rem] text-(--ui-text-quaternary)", children: [
+      "还有 ",
+      items.length - 8,
+      " 项，「旧版数据」里有完整列表"
+    ] })
+  ] });
+}
+var HOME_EMPTY_HINTS = {
+  today: "今天没有安排 🎉 手机转发到 QQ 群会自动收录进工作台",
+  inbox: "待审核是空的——手机收进来的内容会先出现在这里等你过目",
+  attention: "没有需要你拍板或修复的事情",
+  recent: "还没有完成记录——处理完的第一件事会出现在这里"
+};
+function HomeView({ board, onPreview, onOpenLegacy }) {
+  const [ignored, setIgnored] = useState2(/* @__PURE__ */ new Set());
+  const { data: brief } = useQuery2({
+    queryKey: ["workbench", "brief"],
+    queryFn: fetchBrief,
+    staleTime: 30 * 60 * 1e3
+  });
+  const health = useQuery2({ queryKey: ["workbench", "health"], queryFn: fetchHealth, refetchInterval: 3e4 });
+  const model = useMemo2(() => buildHomeModel(board), [board]);
+  const acceptBrief = async (card) => {
+    if (card.type !== "new_task") return;
+    try {
+      const res = await ingestMessage(`brief-${Date.now()}`, "待验证", card.title);
+      if (res.ok) {
+        host2.notify({ kind: "success", message: "已加入待验证" });
+        invalidateBoard();
+        setIgnored((prev) => new Set(prev).add(card.title));
+      } else {
+        host2.notify({ kind: "warning", message: res.error || "采纳失败" });
+      }
+    } catch (err) {
+      host2.notify({ kind: "error", message: String(err) });
+    }
+  };
+  const visibleCards = (brief?.cards ?? []).filter((c) => !ignored.has(c.title)).slice(0, 5);
+  const [searchQ, setSearchQ] = useState2("");
+  const [debouncedQ, setDebouncedQ] = useState2("");
+  useEffect(() => {
+    const t = window.setTimeout(() => setDebouncedQ(searchQ.trim()), 250);
+    return () => window.clearTimeout(t);
+  }, [searchQ]);
+  const { data: searchData, isLoading: searchLoading, error: searchError } = useQuery2({
+    queryKey: ["workbench", "home-search", debouncedQ],
+    queryFn: () => fetchSearch(debouncedQ),
+    enabled: debouncedQ.length > 0,
+    retry: 1
+  });
+  const searchFeedback = homeSearchFeedback({
+    hasQuery: debouncedQ.length > 0,
+    isLoading: searchLoading,
+    error: searchError,
+    data: searchData ?? null
+  });
+  const openResult = (r) => {
+    onPreview(r);
+    setSearchQ("");
+    setDebouncedQ("");
+  };
+  const todayRegion = model.regions.find((r) => r.id === "today");
+  const inboxRegion = model.regions.find((r) => r.id === "inbox");
+  const attentionRegion = model.regions.find((r) => r.id === "attention");
+  const recentRegion = model.regions.find((r) => r.id === "recent");
+  const mainRegions = [todayRegion, inboxRegion, attentionRegion];
+  const healthState = health.isLoading ? "loading" : health.error ? "unreachable" : !health.data || health.data.status === "green" || health.data.status === "disabled" ? "ok" : "degraded";
+  return /* @__PURE__ */ jsxs3("div", { className: "flex flex-1 flex-col overflow-y-auto px-3 pb-3", children: [
+    /* @__PURE__ */ jsx3("p", { className: "mt-2 px-1 text-[0.8125rem] text-(--ui-text-tertiary)", children: "手机收进来的东西，在这里审核、继续、沉淀。" }),
+    /* @__PURE__ */ jsxs3("div", { className: "relative mt-1 px-1", children: [
+      /* @__PURE__ */ jsx3(
+        "input",
+        {
+          type: "text",
+          "data-wb-home-search": true,
+          value: searchQ,
+          onChange: (e) => setSearchQ(e.target.value),
+          onKeyDown: (e) => {
+            if (e.key === "Escape") {
+              setSearchQ("");
+              setDebouncedQ("");
+            }
+          },
+          placeholder: "搜索任务、内容、标签…",
+          className: "h-8 w-full rounded-md border border-(--ui-stroke-secondary) bg-(--ui-bg-secondary) px-3 text-[0.8125rem] text-(--ui-text-primary) placeholder:text-(--ui-text-quaternary) focus:border-(--ui-accent) focus:outline-none"
+        }
+      ),
+      debouncedQ.length > 0 && searchFeedback.kind !== "idle" && /* @__PURE__ */ jsx3("div", { className: "absolute left-1 right-1 top-full z-40 mt-1 max-h-80 overflow-y-auto rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-elevated) p-1 text-[0.8125rem] shadow-lg", children: searchFeedback.kind === "results" && searchData ? searchData.results.map((r) => /* @__PURE__ */ jsxs3(
+        "button",
+        {
+          type: "button",
+          className: "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-(--ui-stroke-secondary)",
+          onClick: () => openResult(searchResultToCard(r, board.root)),
+          children: [
+            /* @__PURE__ */ jsx3("span", { className: "shrink-0 text-[0.75rem] text-(--ui-text-tertiary)", children: r.dir }),
+            /* @__PURE__ */ jsx3("span", { className: "min-w-0 flex-1 truncate font-medium text-(--ui-text-primary)", children: r.title }),
+            r.tags.slice(0, 2).map((t) => /* @__PURE__ */ jsx3("span", { className: "shrink-0 rounded bg-(--ui-accent)/10 px-1 text-[0.75rem] text-(--ui-accent)", children: t }, t))
+          ]
+        },
+        `${r.dir}:${r.file}`
+      )) : /* @__PURE__ */ jsxs3("div", { className: cn3(
+        "px-2 py-2 text-[0.8125rem]",
+        searchFeedback.kind === "unreachable" || searchFeedback.kind === "failure" || searchFeedback.kind === "timeout" ? "text-[#f87171]" : "text-(--ui-text-tertiary)"
+      ), children: [
+        searchFeedback.text,
+        searchFeedback.retry && /* @__PURE__ */ jsx3(
+          "button",
+          {
+            type: "button",
+            className: "ml-2 rounded border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary)",
+            onClick: () => setSearchQ((q) => q),
+            children: "重试"
+          }
+        )
+      ] }) })
+    ] }),
+    model.contractErrors.length > 0 && /* @__PURE__ */ jsxs3("div", { className: "mt-1 rounded-md border border-[#f87171]/40 bg-[#f87171]/10 px-3 py-1.5 text-[0.75rem] text-[#f87171]", children: [
+      /* @__PURE__ */ jsx3(Codicon2, { name: "warning", size: "0.75rem", className: "mr-1 inline" }),
+      "有 ",
+      model.contractErrors.length,
+      " 个条目的状态无法识别，已按契约隔离未显示在任何区。 请通过「旧版数据」查看原始状态并修正 frontmatter status 字段。"
+    ] }),
+    /* @__PURE__ */ jsxs3("div", { className: "grid grid-cols-1 gap-3 py-3 lg:grid-cols-3", children: [
+      mainRegions.map((region) => /* @__PURE__ */ jsxs3("section", { className: "flex min-w-0 flex-col gap-1.5 rounded-lg border border-(--ui-stroke-secondary) p-2.5", children: [
+        /* @__PURE__ */ jsxs3("div", { className: "flex items-center gap-1.5", children: [
+          /* @__PURE__ */ jsx3("span", { className: "text-[0.8125rem] font-semibold text-(--ui-text-primary)", children: region.id === "today" ? "今日" : region.id === "inbox" ? "待审核" : "需要注意" }),
+          /* @__PURE__ */ jsx3("span", { className: "text-[0.75rem] tabular-nums text-(--ui-text-quaternary)", children: region.count }),
+          region.id === "attention" && model.totals.attention.failures > 0 && /* @__PURE__ */ jsxs3("span", { className: "rounded bg-[#f87171]/15 px-1 text-[0.6875rem] text-[#f87171]", children: [
+            "失败 ",
+            model.totals.attention.failures
+          ] })
+        ] }),
+        region.items.length === 0 ? /* @__PURE__ */ jsx3("div", { className: "rounded-md border border-dashed border-(--ui-stroke-tertiary) px-3 py-4 text-center text-[0.75rem] text-(--ui-text-quaternary)", children: HOME_EMPTY_HINTS[region.id] }) : /* @__PURE__ */ jsx3(HomeRegionCardList, { items: region.items, onPreview })
+      ] }, region.id)),
+      healthState !== "ok" && /* @__PURE__ */ jsxs3(
+        "div",
+        {
+          className: healthState === "unreachable" ? "rounded-md border border-[#f87171]/40 bg-[#f87171]/10 px-3 py-1.5 text-[0.75rem] text-[#f87171]" : "rounded-md border border-[#fbbf24]/40 bg-[#fbbf24]/10 px-3 py-1.5 text-[0.75rem] text-[#fbbf24]",
+          children: [
+            healthState === "loading" && "链路健康检查中…",
+            healthState === "unreachable" && "后端暂时不可达，健康状态与数据可能不是最新（稍后自动重试）。",
+            healthState === "degraded" && `链路有点状况：${health.data?.label ?? "部分检查未通过"}${health.data?.last_error ? ` · 最近错误：${health.data.last_error.reason}` : ""}`
+          ]
+        }
+      ),
+      /* @__PURE__ */ jsxs3("section", { className: "flex min-w-0 flex-col gap-1.5 rounded-lg border border-(--ui-stroke-secondary) p-2.5 lg:col-span-3", children: [
+        /* @__PURE__ */ jsxs3("div", { className: "flex items-center gap-1.5", children: [
+          /* @__PURE__ */ jsx3("span", { className: "text-[0.8125rem] font-semibold text-(--ui-text-primary)", children: "最近完成" }),
+          /* @__PURE__ */ jsx3("span", { className: "text-[0.75rem] tabular-nums text-(--ui-text-quaternary)", children: recentRegion.count }),
+          /* @__PURE__ */ jsx3("button", { className: "ml-auto text-[0.75rem] text-(--ui-accent) hover:underline", onClick: onOpenLegacy, type: "button", children: "旧版数据 →" })
+        ] }),
+        recentRegion.items.length === 0 ? /* @__PURE__ */ jsx3("div", { className: "rounded-md border border-dashed border-(--ui-stroke-tertiary) px-3 py-4 text-center text-[0.75rem] text-(--ui-text-quaternary)", children: HOME_EMPTY_HINTS.recent }) : /* @__PURE__ */ jsx3(HomeRegionCardList, { items: [...recentRegion.items].reverse(), onPreview })
+      ] }),
+      /* @__PURE__ */ jsxs3("section", { className: "flex flex-col gap-1.5 lg:col-span-3", children: [
+        /* @__PURE__ */ jsxs3("div", { className: "flex items-center gap-1.5", children: [
+          /* @__PURE__ */ jsx3("span", { className: "text-[0.8125rem] font-semibold text-(--ui-text-secondary)", children: "✨ 规则建议" }),
+          /* @__PURE__ */ jsx3("span", { className: "text-[0.75rem] text-(--ui-text-quaternary)", children: "依据任务状态、截止日期和最近结果生成" })
+        ] }),
+        brief?.degraded ? /* @__PURE__ */ jsx3("div", { className: "rounded-md border border-(--ui-stroke-tertiary) px-2.5 py-2 text-[0.75rem] text-(--ui-text-quaternary)", children: "规则建议暂不可用，请稍后重试" }) : visibleCards.length === 0 ? /* @__PURE__ */ jsx3("div", { className: "px-1 text-[0.75rem] text-(--ui-text-quaternary)", children: "暂无建议" }) : visibleCards.map((c) => /* @__PURE__ */ jsx3(
+          BriefCardView,
+          {
+            card: c,
+            onAccept: c.type === "new_task" ? () => void acceptBrief(c) : void 0,
+            onIgnore: () => setIgnored((prev) => new Set(prev).add(c.title))
+          },
+          c.title
+        ))
+      ] })
+    ] })
+  ] });
+}
+
 // desktop-src/conversations.tsx
-import { Codicon as Codicon2, host as host2 } from "@hermes/plugin-sdk";
-import { useEffect, useRef, useState as useState2 } from "react";
+import { Codicon as Codicon3, host as host3 } from "@hermes/plugin-sdk";
+import { useEffect as useEffect2, useRef, useState as useState3 } from "react";
 
 // desktop-src/clipboard.ts
 function runtimeWriters() {
@@ -833,18 +1515,19 @@ async function writeWorkbenchClipboard(text, writers = runtimeWriters()) {
 }
 
 // desktop-src/conversations.tsx
-import { jsx as jsx3, jsxs as jsxs3 } from "react/jsx-runtime";
+import { jsx as jsx4, jsxs as jsxs4 } from "react/jsx-runtime";
 var platformLabel = (platform) => ({ qq: "QQ", weixin: "微信", messaging: "消息平台" })[platform] ?? platform;
 function ConversationActionButton({ item }) {
-  const canOpen = item.resume_mode === "original" && !!item.session_id;
-  const [copyStatus, setCopyStatus] = useState2("idle");
+  const primary = conversationPrimaryAction(item);
+  const canOpen = primary.kind === "open_original";
+  const [copyStatus, setCopyStatus] = useState3("idle");
   const resetTimer = useRef(null);
-  useEffect(() => () => {
+  useEffect2(() => () => {
     if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
   }, []);
   const handleClick = async () => {
     if (canOpen) {
-      host2.navigate("/" + encodeURIComponent(item.session_id));
+      host3.navigate("/" + encodeURIComponent(item.session_id));
       return;
     }
     try {
@@ -856,43 +1539,43 @@ function ConversationActionButton({ item }) {
     if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
     resetTimer.current = window.setTimeout(() => setCopyStatus("idle"), 1800);
   };
-  const label = canOpen ? conversationActionLabel(item) : copyStatus === "copied" ? "已复制" : copyStatus === "error" ? "复制失败" : conversationActionLabel(item);
-  return /* @__PURE__ */ jsx3("button", { type: "button", className: "rounded border border-(--ui-stroke-secondary) px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary)", onClick: () => {
+  const label = canOpen ? primary.label : copyStatus === "copied" ? "已复制" : copyStatus === "error" ? "复制失败" : primary.label;
+  return /* @__PURE__ */ jsx4("button", { type: "button", className: "rounded border border-(--ui-stroke-secondary) px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary)", onClick: () => {
     void handleClick();
   }, title: canOpen ? "跳转到 Hermes 原会话" : copyStatus === "error" ? "剪贴板不可用，请稍后重试" : "复制续接摘要，可粘贴到任意新会话", children: label });
 }
 function ConversationIndexView({ items, loading, error }) {
-  if (loading) return /* @__PURE__ */ jsx3("div", { className: "p-6 text-sm text-(--ui-text-tertiary)", children: "正在加载消息任务…" });
-  if (error) return /* @__PURE__ */ jsx3("div", { className: "p-6 text-sm text-red-400", children: "消息任务加载失败，请稍后重试。" });
-  if (!items.length) return /* @__PURE__ */ jsxs3("div", { className: "flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center", children: [
-    /* @__PURE__ */ jsx3(Codicon2, { name: "comment-discussion", size: "1.5rem" }),
-    /* @__PURE__ */ jsx3("div", { className: "text-sm font-medium", children: "暂无消息任务" }),
-    /* @__PURE__ */ jsx3("div", { className: "max-w-lg text-[0.8125rem] text-(--ui-text-tertiary)", children: "从已授权的 QQ 或微信发送 /wb 任务后，会在这里生成脱敏索引。" })
+  if (loading) return /* @__PURE__ */ jsx4("div", { className: "p-6 text-sm text-(--ui-text-tertiary)", children: "正在加载消息任务…" });
+  if (error) return /* @__PURE__ */ jsx4("div", { className: "p-6 text-sm text-red-400", children: "消息任务加载失败，请稍后重试。" });
+  if (!items.length) return /* @__PURE__ */ jsxs4("div", { className: "flex flex-1 flex-col items-center justify-center gap-2 p-8 text-center", children: [
+    /* @__PURE__ */ jsx4(Codicon3, { name: "comment-discussion", size: "1.5rem" }),
+    /* @__PURE__ */ jsx4("div", { className: "text-sm font-medium", children: "暂无消息任务" }),
+    /* @__PURE__ */ jsx4("div", { className: "max-w-lg text-[0.8125rem] text-(--ui-text-tertiary)", children: "从已授权的 QQ 或微信发送 /wb 任务后，会在这里生成脱敏索引。" })
   ] });
-  return /* @__PURE__ */ jsxs3("div", { className: "flex flex-1 flex-col gap-2 overflow-y-auto p-3", children: [
-    /* @__PURE__ */ jsx3("div", { className: "mb-1 text-[0.75rem] text-(--ui-text-tertiary)", children: "仅记录授权后创建的任务；原始用户与消息标识不会写入 Workbench。" }),
+  return /* @__PURE__ */ jsxs4("div", { className: "flex flex-1 flex-col gap-2 overflow-y-auto p-3", children: [
+    /* @__PURE__ */ jsx4("div", { className: "mb-1 text-[0.75rem] text-(--ui-text-tertiary)", children: "仅记录授权后创建的任务；原始用户与消息标识不会写入 Workbench。" }),
     items.map((item) => {
-      return /* @__PURE__ */ jsx3("article", { className: "rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-secondary) p-3", children: /* @__PURE__ */ jsxs3("div", { className: "flex items-start gap-3", children: [
-        /* @__PURE__ */ jsx3("span", { className: "rounded bg-(--ui-stroke-secondary) px-2 py-0.5 text-[0.75rem] text-(--ui-text-secondary)", children: platformLabel(item.platform) }),
-        /* @__PURE__ */ jsxs3("div", { className: "min-w-0 flex-1", children: [
-          /* @__PURE__ */ jsx3("div", { className: "truncate text-sm font-medium", children: item.summary || "未命名消息任务" }),
-          /* @__PURE__ */ jsxs3("div", { className: "mt-1 flex flex-wrap gap-x-3 text-[0.75rem] text-(--ui-text-tertiary)", children: [
-            /* @__PURE__ */ jsxs3("span", { children: [
+      return /* @__PURE__ */ jsx4("article", { className: "rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-secondary) p-3", children: /* @__PURE__ */ jsxs4("div", { className: "flex items-start gap-3", children: [
+        /* @__PURE__ */ jsx4("span", { className: "rounded bg-(--ui-stroke-secondary) px-2 py-0.5 text-[0.75rem] text-(--ui-text-secondary)", children: platformLabel(item.platform) }),
+        /* @__PURE__ */ jsxs4("div", { className: "min-w-0 flex-1", children: [
+          /* @__PURE__ */ jsx4("div", { className: "truncate text-sm font-medium", children: item.summary || "未命名消息任务" }),
+          /* @__PURE__ */ jsxs4("div", { className: "mt-1 flex flex-wrap gap-x-3 text-[0.75rem] text-(--ui-text-tertiary)", children: [
+            /* @__PURE__ */ jsxs4("span", { children: [
               "任务 ",
               item.task_id
             ] }),
-            /* @__PURE__ */ jsx3("span", { children: item.status }),
-            /* @__PURE__ */ jsx3("span", { children: item.updated_at.replace("T", " ") })
+            /* @__PURE__ */ jsx4("span", { children: item.status }),
+            /* @__PURE__ */ jsx4("span", { children: item.updated_at.replace("T", " ") })
           ] })
         ] }),
-        /* @__PURE__ */ jsx3(ConversationActionButton, { item })
+        /* @__PURE__ */ jsx4(ConversationActionButton, { item })
       ] }) }, item.ref_id);
     })
   ] });
 }
 
 // desktop-src/board.tsx
-import { Fragment as Fragment3, jsx as jsx4, jsxs as jsxs4 } from "react/jsx-runtime";
+import { Fragment as Fragment4, jsx as jsx5, jsxs as jsxs5 } from "react/jsx-runtime";
 var executionDeps = {
   prepare: async (input) => {
     const result = await executeTask(input.dir, input.file, {
@@ -904,9 +1587,9 @@ var executionDeps = {
     invalidateBoard();
     return result;
   },
-  createSession: (input) => host3.request("session.create", input),
+  createSession: (input) => host4.request("session.create", input),
   bind: bindSession,
-  submit: (runtimeSessionId, text) => host3.request("prompt.submit", {
+  submit: (runtimeSessionId, text) => host4.request("prompt.submit", {
     session_id: runtimeSessionId,
     text
   }),
@@ -918,7 +1601,7 @@ var executionDeps = {
 };
 function notifyExecutionFailure(result) {
   const rollbackNote = result.rollbackError ? `；自动恢复失败：${result.rollbackError}，请人工检查任务状态` : "；任务已恢复为待办";
-  host3.notify({ kind: "error", message: `${result.error || "执行启动失败"}${rollbackNote}` });
+  host4.notify({ kind: "error", message: `${result.error || "执行启动失败"}${rollbackNote}` });
 }
 var CardErrorBoundary = class extends Component {
   state = { error: null };
@@ -927,7 +1610,7 @@ var CardErrorBoundary = class extends Component {
   }
   render() {
     if (this.state.error) {
-      return /* @__PURE__ */ jsx4("div", { className: "mb-1.5 rounded-md border border-(--ui-stroke-danger) bg-(--ui-bg-elevated) p-2.5 text-[0.75rem] text-(--ui-text-danger)", children: "卡片渲染失败（数据异常）" });
+      return /* @__PURE__ */ jsx5("div", { className: "mb-1.5 rounded-md border border-(--ui-red) bg-(--ui-bg-elevated) p-2.5 text-[0.75rem] text-(--ui-red)", children: "卡片渲染失败（数据异常）" });
     }
     return this.props.children;
   }
@@ -939,8 +1622,8 @@ function WbCardView({ card, sectionKey, onPreview, openMenuKey, onMenuOpenChange
   const menuKey = JSON.stringify([sectionKey, card.file, card.entry_title || ""]);
   const menuOpen = openMenuKey === menuKey;
   const menuTriggerRef = useRef2(null);
-  const [menuPosition, setMenuPosition] = useState3(null);
-  useEffect2(() => {
+  const [menuPosition, setMenuPosition] = useState4(null);
+  useEffect3(() => {
     if (!menuOpen || !menuTriggerRef.current) {
       setMenuPosition(null);
       return;
@@ -967,12 +1650,12 @@ function WbCardView({ card, sectionKey, onPreview, openMenuKey, onMenuOpenChange
       window.removeEventListener("scroll", updatePosition, true);
     };
   }, [menuOpen]);
-  const [execOpen, setExecOpen] = useState3(false);
+  const [execOpen, setExecOpen] = useState4(false);
   const cardKey = JSON.stringify([card.dir, card.file, card.entry_title || ""]);
   const isSelected = selected.has(cardKey);
   const canArchive = canArchiveTask(sectionKey, card.status, card.execution_result || void 0);
   const mutOpts = {
-    onError: (err) => host3.notify({ kind: "error", message: String(err) }),
+    onError: (err) => host4.notify({ kind: "error", message: String(err) }),
     onSuccess: () => invalidateBoard()
   };
   const doComplete = useMutation2({ mutationFn: () => completeTask(card.dir, card.file), ...mutOpts });
@@ -990,7 +1673,7 @@ function WbCardView({ card, sectionKey, onPreview, openMenuKey, onMenuOpenChange
     mutationFn: () => toTask(card.dir, card.file, card.entry_title ? { entry_title: card.entry_title } : void 0),
     ...mutOpts
   });
-  const [editOpen, setEditOpen] = useState3(false);
+  const [editOpen, setEditOpen] = useState4(false);
   const execTask = useCallback(async (overrides) => {
     const title = overrides?.title || card.title || card.file.replace(/\.md$/, "");
     if (!title) return;
@@ -1005,7 +1688,7 @@ function WbCardView({ card, sectionKey, onPreview, openMenuKey, onMenuOpenChange
       notifyExecutionFailure(result);
       return;
     }
-    host3.navigate("/" + encodeURIComponent(result.storedSessionId));
+    host4.navigate("/" + encodeURIComponent(result.storedSessionId));
   }, [card]);
   const execAggregate = useCallback(async (overrides) => {
     const entryTitle = card.entry_title || "";
@@ -1013,13 +1696,13 @@ function WbCardView({ card, sectionKey, onPreview, openMenuKey, onMenuOpenChange
     try {
       const converted = await toTask(card.dir, card.file, { entry_title: entryTitle });
       if (!converted.ok) {
-        host3.notify({ kind: "error", message: converted.error || "转任务失败" });
+        host4.notify({ kind: "error", message: converted.error || "转任务失败" });
         return;
       }
       const taskFile = converted.task_file || "";
       const taskTitle = overrides?.title || converted.task || entryTitle;
       if (!taskFile) {
-        host3.notify({ kind: "error", message: "转任务失败：无任务文件" });
+        host4.notify({ kind: "error", message: "转任务失败：无任务文件" });
         return;
       }
       const result = await launchWorkbenchTask({
@@ -1033,24 +1716,24 @@ function WbCardView({ card, sectionKey, onPreview, openMenuKey, onMenuOpenChange
         notifyExecutionFailure(result);
         return;
       }
-      host3.navigate("/" + encodeURIComponent(result.storedSessionId));
+      host4.navigate("/" + encodeURIComponent(result.storedSessionId));
     } catch (err) {
-      host3.notify({ kind: "error", message: String(err) });
+      host4.notify({ kind: "error", message: String(err) });
     }
   }, [card]);
   const copyPath = async () => {
     try {
       await navigator.clipboard.writeText(card.path);
-      host3.notify({ kind: "success", message: "路径已复制" });
+      host4.notify({ kind: "success", message: "路径已复制" });
     } catch {
-      host3.notify({ kind: "error", message: "复制失败" });
+      host4.notify({ kind: "error", message: "复制失败" });
     }
   };
-  return /* @__PURE__ */ jsxs4(Fragment3, { children: [
-    /* @__PURE__ */ jsxs4(
+  return /* @__PURE__ */ jsxs5(Fragment4, { children: [
+    /* @__PURE__ */ jsxs5(
       "div",
       {
-        className: cn3(
+        className: cn4(
           "group relative mb-1.5 flex flex-col gap-1.5 rounded-md border border-(--ui-stroke-tertiary) border-l-2 bg-(--ui-bg-elevated) p-2.5 text-[0.75rem] transition-colors",
           multiMode ? "cursor-default" : "cursor-pointer hover:bg-primary/[0.06]",
           isSelected && "border-(--ui-accent) bg-[color-mix(in_srgb,var(--ui-accent)_10%,transparent)]"
@@ -1061,7 +1744,7 @@ function WbCardView({ card, sectionKey, onPreview, openMenuKey, onMenuOpenChange
           multiMode ? onToggleSelect(cardKey) : onPreview(card);
         },
         children: [
-          multiMode && /* @__PURE__ */ jsx4(
+          multiMode && /* @__PURE__ */ jsx5(
             "span",
             {
               className: "absolute top-1 left-1 z-10 flex size-4 items-center justify-center rounded-full border text-[0.75rem]",
@@ -1069,10 +1752,10 @@ function WbCardView({ card, sectionKey, onPreview, openMenuKey, onMenuOpenChange
               children: "✓"
             }
           ),
-          /* @__PURE__ */ jsxs4("div", { className: "flex items-start justify-between gap-1", children: [
-            /* @__PURE__ */ jsx4("span", { className: "line-clamp-2 flex-1 break-words font-medium leading-snug text-[0.9375rem]", children: card.title || card.file.replace(/\.md$/, "") }),
-            /* @__PURE__ */ jsxs4("span", { className: "flex shrink-0 items-center gap-1 pr-5", children: [
-              card.priority && priorityMeta(card.priority) && /* @__PURE__ */ jsx4(
+          /* @__PURE__ */ jsxs5("div", { className: "flex items-start justify-between gap-1", children: [
+            /* @__PURE__ */ jsx5("span", { className: "line-clamp-2 flex-1 break-words font-medium leading-snug text-[0.9375rem]", children: card.title || card.file.replace(/\.md$/, "") }),
+            /* @__PURE__ */ jsxs5("span", { className: "flex shrink-0 items-center gap-1 pr-5", children: [
+              card.priority && priorityMeta(card.priority) && /* @__PURE__ */ jsx5(
                 "span",
                 {
                   className: "rounded px-1 text-[0.75rem] font-semibold",
@@ -1083,7 +1766,7 @@ function WbCardView({ card, sectionKey, onPreview, openMenuKey, onMenuOpenChange
                   children: card.priority
                 }
               ),
-              card.size && sizeMeta(card.size) && /* @__PURE__ */ jsx4(
+              card.size && sizeMeta(card.size) && /* @__PURE__ */ jsx5(
                 "span",
                 {
                   className: "rounded border px-1 text-[0.75rem] font-medium",
@@ -1091,10 +1774,10 @@ function WbCardView({ card, sectionKey, onPreview, openMenuKey, onMenuOpenChange
                   children: card.size
                 }
               ),
-              card.entry_count > 0 && /* @__PURE__ */ jsx4("span", { className: "rounded bg-(--ui-accent)/10 px-1 text-[0.75rem] text-(--ui-accent)", children: card.entry_count })
+              card.entry_count > 0 && /* @__PURE__ */ jsx5("span", { className: "rounded bg-(--ui-accent)/10 px-1 text-[0.75rem] text-(--ui-accent)", children: card.entry_count })
             ] })
           ] }),
-          card.tags && card.tags.length > 0 && /* @__PURE__ */ jsx4("div", { className: "mt-1 flex flex-wrap gap-1", children: card.tags.map((t) => /* @__PURE__ */ jsx4(
+          card.tags && card.tags.length > 0 && /* @__PURE__ */ jsx5("div", { className: "mt-1 flex flex-wrap gap-1", children: card.tags.map((t) => /* @__PURE__ */ jsx5(
             "button",
             {
               type: "button",
@@ -1102,7 +1785,7 @@ function WbCardView({ card, sectionKey, onPreview, openMenuKey, onMenuOpenChange
                 e.stopPropagation();
                 $tagFilter.set(tagFilter === t ? "" : t);
               },
-              className: cn3(
+              className: cn4(
                 "rounded px-1 text-[0.75rem] leading-4 transition-colors",
                 tagFilter === t ? "bg-(--ui-accent) text-(--ui-bg)" : "bg-(--ui-bg-elevated) text-(--ui-text-tertiary) hover:text-(--ui-accent)"
               ),
@@ -1110,16 +1793,16 @@ function WbCardView({ card, sectionKey, onPreview, openMenuKey, onMenuOpenChange
             },
             t
           )) }),
-          /* @__PURE__ */ jsxs4("div", { className: "mt-1 flex items-center gap-1.5 text-[0.75rem] text-(--ui-text-quaternary)", children: [
-            /* @__PURE__ */ jsx4("span", { className: "inline-block h-1.5 w-1.5 rounded-full", style: { backgroundColor: tone } }),
-            /* @__PURE__ */ jsx4("span", { children: card.status }),
-            card.due && /* @__PURE__ */ jsxs4("span", { className: isOverdue(card.due) ? "font-semibold text-(--ui-text-danger)" : void 0, children: [
+          /* @__PURE__ */ jsxs5("div", { className: "mt-1 flex items-center gap-1.5 text-[0.75rem] text-(--ui-text-quaternary)", children: [
+            /* @__PURE__ */ jsx5("span", { className: "inline-block h-1.5 w-1.5 rounded-full", style: { backgroundColor: tone } }),
+            /* @__PURE__ */ jsx5("span", { children: card.status }),
+            card.due && /* @__PURE__ */ jsxs5("span", { className: isOverdue(card.due) ? "font-semibold text-(--ui-red)" : void 0, children: [
               "· 截止 ",
               card.due,
               isOverdue(card.due) && " ⚠"
             ] }),
-            card.status === "in_progress" && card.session_id && /* @__PURE__ */ jsx4("span", { children: "· ▶ 执行中" }),
-            conversationPlatforms.length > 0 && /* @__PURE__ */ jsx4(
+            card.status === "in_progress" && card.session_id && /* @__PURE__ */ jsx5("span", { children: "· ▶ 执行中" }),
+            conversationPlatforms.length > 0 && /* @__PURE__ */ jsx5(
               "button",
               {
                 type: "button",
@@ -1133,98 +1816,98 @@ function WbCardView({ card, sectionKey, onPreview, openMenuKey, onMenuOpenChange
               }
             )
           ] }),
-          !multiMode && /* @__PURE__ */ jsx4("div", { className: "mt-1 flex items-center gap-1", children: sectionKey === "task" && card.status === "todo" ? /* @__PURE__ */ jsxs4(Fragment3, { children: [
-            /* @__PURE__ */ jsxs4("button", { className: "inline-flex items-center gap-0.5 rounded px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-accent)", onClick: (e) => {
+          !multiMode && /* @__PURE__ */ jsx5("div", { className: "mt-1 flex items-center gap-1", children: sectionKey === "task" && card.status === "todo" ? /* @__PURE__ */ jsxs5(Fragment4, { children: [
+            /* @__PURE__ */ jsxs5("button", { className: "inline-flex items-center gap-0.5 rounded px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-accent)", onClick: (e) => {
               e.stopPropagation();
               doComplete.mutate();
             }, type: "button", "aria-label": "归档", children: [
-              /* @__PURE__ */ jsx4(Codicon3, { name: "check", size: "0.7rem" }),
+              /* @__PURE__ */ jsx5(Codicon4, { name: "check", size: "0.7rem" }),
               "归档"
             ] }),
-            /* @__PURE__ */ jsxs4("button", { className: "inline-flex items-center gap-0.5 rounded px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-accent)", onClick: (e) => {
+            /* @__PURE__ */ jsxs5("button", { className: "inline-flex items-center gap-0.5 rounded px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-accent)", onClick: (e) => {
               e.stopPropagation();
               setExecOpen(true);
             }, type: "button", "aria-label": "执行", children: [
-              /* @__PURE__ */ jsx4(Codicon3, { name: "play", size: "0.7rem" }),
+              /* @__PURE__ */ jsx5(Codicon4, { name: "play", size: "0.7rem" }),
               "执行"
             ] })
-          ] }) : canArchive ? /* @__PURE__ */ jsxs4(Fragment3, { children: [
-            /* @__PURE__ */ jsxs4("button", { className: "inline-flex items-center gap-0.5 rounded px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-accent)", onClick: (e) => {
+          ] }) : canArchive ? /* @__PURE__ */ jsxs5(Fragment4, { children: [
+            /* @__PURE__ */ jsxs5("button", { className: "inline-flex items-center gap-0.5 rounded px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-accent)", onClick: (e) => {
               e.stopPropagation();
               doComplete.mutate();
             }, type: "button", "aria-label": "归档", children: [
-              /* @__PURE__ */ jsx4(Codicon3, { name: "check", size: "0.7rem" }),
+              /* @__PURE__ */ jsx5(Codicon4, { name: "check", size: "0.7rem" }),
               "归档"
             ] }),
-            card.status === "in_progress" && card.session_id && /* @__PURE__ */ jsxs4("button", { className: "inline-flex items-center gap-0.5 rounded px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-accent)", onClick: (e) => {
+            card.status === "in_progress" && card.session_id && /* @__PURE__ */ jsxs5("button", { className: "inline-flex items-center gap-0.5 rounded px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-accent)", onClick: (e) => {
               e.stopPropagation();
-              host3.navigate("/" + encodeURIComponent(card.session_id));
+              host4.navigate("/" + encodeURIComponent(card.session_id));
             }, type: "button", "aria-label": "打开会话", children: [
-              /* @__PURE__ */ jsx4(Codicon3, { name: "link-external", size: "0.7rem" }),
+              /* @__PURE__ */ jsx5(Codicon4, { name: "link-external", size: "0.7rem" }),
               "打开会话"
             ] })
-          ] }) : sectionKey === "task" && card.status === "abandoned" ? /* @__PURE__ */ jsxs4("button", { className: "inline-flex items-center gap-0.5 rounded px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-accent)", onClick: (e) => {
+          ] }) : sectionKey === "task" && card.status === "abandoned" ? /* @__PURE__ */ jsxs5("button", { className: "inline-flex items-center gap-0.5 rounded px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-accent)", onClick: (e) => {
             e.stopPropagation();
             doReopen.mutate();
           }, type: "button", "aria-label": "重新打开", children: [
-            /* @__PURE__ */ jsx4(Codicon3, { name: "refresh", size: "0.7rem" }),
+            /* @__PURE__ */ jsx5(Codicon4, { name: "refresh", size: "0.7rem" }),
             "重新打开"
-          ] }) : sectionKey === "done" && card.entry_count > 0 ? /* @__PURE__ */ jsxs4("button", { className: "inline-flex items-center gap-0.5 rounded px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-accent)", onClick: (e) => {
+          ] }) : sectionKey === "done" && card.entry_count > 0 ? /* @__PURE__ */ jsxs5("button", { className: "inline-flex items-center gap-0.5 rounded px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-accent)", onClick: (e) => {
             e.stopPropagation();
             doResolve.mutate();
           }, type: "button", "aria-label": "确认处理", children: [
-            /* @__PURE__ */ jsx4(Codicon3, { name: "check", size: "0.7rem" }),
+            /* @__PURE__ */ jsx5(Codicon4, { name: "check", size: "0.7rem" }),
             "确认处理"
-          ] }) : sectionKey === "done" ? /* @__PURE__ */ jsxs4(Fragment3, { children: [
-            card.session_id && /* @__PURE__ */ jsxs4("button", { className: "inline-flex items-center gap-0.5 rounded px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-accent)", onClick: (e) => {
+          ] }) : sectionKey === "done" ? /* @__PURE__ */ jsxs5(Fragment4, { children: [
+            card.session_id && /* @__PURE__ */ jsxs5("button", { className: "inline-flex items-center gap-0.5 rounded px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-accent)", onClick: (e) => {
               e.stopPropagation();
-              host3.navigate("/" + encodeURIComponent(card.session_id));
+              host4.navigate("/" + encodeURIComponent(card.session_id));
             }, type: "button", "aria-label": "打开会话", children: [
-              /* @__PURE__ */ jsx4(Codicon3, { name: "link-external", size: "0.7rem" }),
+              /* @__PURE__ */ jsx5(Codicon4, { name: "link-external", size: "0.7rem" }),
               "打开会话"
             ] }),
-            /* @__PURE__ */ jsxs4("button", { className: "inline-flex items-center gap-0.5 rounded px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-accent)", onClick: (e) => {
+            /* @__PURE__ */ jsxs5("button", { className: "inline-flex items-center gap-0.5 rounded px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-accent)", onClick: (e) => {
               e.stopPropagation();
               doReopen.mutate();
             }, type: "button", "aria-label": "回到任务列表", children: [
-              /* @__PURE__ */ jsx4(Codicon3, { name: "refresh", size: "0.7rem" }),
+              /* @__PURE__ */ jsx5(Codicon4, { name: "refresh", size: "0.7rem" }),
               "回到任务列表"
             ] })
-          ] }) : sectionKey === "trash" ? /* @__PURE__ */ jsxs4("button", { className: "inline-flex items-center gap-0.5 rounded px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-accent)", onClick: (e) => {
+          ] }) : sectionKey === "trash" ? /* @__PURE__ */ jsxs5("button", { className: "inline-flex items-center gap-0.5 rounded px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-accent)", onClick: (e) => {
             e.stopPropagation();
             doRestore.mutate();
           }, type: "button", "aria-label": "还原", children: [
-            /* @__PURE__ */ jsx4(Codicon3, { name: "refresh", size: "0.7rem" }),
+            /* @__PURE__ */ jsx5(Codicon4, { name: "refresh", size: "0.7rem" }),
             "还原"
-          ] }) : card.entry_count > 0 ? /* @__PURE__ */ jsxs4(Fragment3, { children: [
-            /* @__PURE__ */ jsxs4("button", { className: "inline-flex items-center gap-0.5 rounded px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-accent)", onClick: (e) => {
+          ] }) : card.entry_count > 0 ? /* @__PURE__ */ jsxs5(Fragment4, { children: [
+            /* @__PURE__ */ jsxs5("button", { className: "inline-flex items-center gap-0.5 rounded px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-accent)", onClick: (e) => {
               e.stopPropagation();
               doResolve.mutate();
             }, type: "button", "aria-label": "确认处理", children: [
-              /* @__PURE__ */ jsx4(Codicon3, { name: "check", size: "0.7rem" }),
+              /* @__PURE__ */ jsx5(Codicon4, { name: "check", size: "0.7rem" }),
               "确认处理"
             ] }),
-            /* @__PURE__ */ jsxs4("button", { className: "inline-flex items-center gap-0.5 rounded px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-accent)", onClick: (e) => {
+            /* @__PURE__ */ jsxs5("button", { className: "inline-flex items-center gap-0.5 rounded px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-accent)", onClick: (e) => {
               e.stopPropagation();
               setExecOpen(true);
             }, type: "button", "aria-label": "执行", children: [
-              /* @__PURE__ */ jsx4(Codicon3, { name: "play", size: "0.7rem" }),
+              /* @__PURE__ */ jsx5(Codicon4, { name: "play", size: "0.7rem" }),
               "执行"
             ] }),
-            /* @__PURE__ */ jsxs4("button", { className: "inline-flex items-center gap-0.5 rounded px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-accent)", onClick: (e) => {
+            /* @__PURE__ */ jsxs5("button", { className: "inline-flex items-center gap-0.5 rounded px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-accent)", onClick: (e) => {
               e.stopPropagation();
               doToTask.mutate();
             }, type: "button", "aria-label": "转任务", children: [
-              /* @__PURE__ */ jsx4(Codicon3, { name: "arrow-right", size: "0.7rem" }),
+              /* @__PURE__ */ jsx5(Codicon4, { name: "arrow-right", size: "0.7rem" }),
               "转任务"
             ] })
           ] }) : null }),
-          /* @__PURE__ */ jsx4(
+          /* @__PURE__ */ jsx5(
             "button",
             {
               "data-wb-menu": true,
               ref: menuTriggerRef,
-              className: cn3(
+              className: cn4(
                 "absolute right-1 top-1 block rounded p-0.5 text-(--ui-text-tertiary)",
                 "hover:bg-(--ui-stroke-secondary)"
               ),
@@ -1234,10 +1917,10 @@ function WbCardView({ card, sectionKey, onPreview, openMenuKey, onMenuOpenChange
               },
               type: "button",
               "aria-label": "Actions",
-              children: /* @__PURE__ */ jsx4(Codicon3, { name: "kebab-vertical", size: "0.75rem" })
+              children: /* @__PURE__ */ jsx5(Codicon4, { name: "kebab-vertical", size: "0.75rem" })
             }
           ),
-          menuOpen && menuPosition && /* @__PURE__ */ jsxs4(
+          menuOpen && menuPosition && /* @__PURE__ */ jsxs5(
             "div",
             {
               "data-wb-menu": true,
@@ -1246,97 +1929,97 @@ function WbCardView({ card, sectionKey, onPreview, openMenuKey, onMenuOpenChange
               style: { left: menuPosition.left, top: menuPosition.top },
               onClick: (e) => e.stopPropagation(),
               children: [
-                sectionKey === "task" && card.status === "todo" && /* @__PURE__ */ jsxs4(Fragment3, { children: [
-                  /* @__PURE__ */ jsx4(MenuBtn, { icon: "check", label: "✓ 归档", onClick: () => {
+                sectionKey === "task" && card.status === "todo" && /* @__PURE__ */ jsxs5(Fragment4, { children: [
+                  /* @__PURE__ */ jsx5(MenuBtn, { icon: "check", label: "✓ 归档", onClick: () => {
                     doComplete.mutate();
                     onMenuOpenChange(null);
                   } }),
-                  /* @__PURE__ */ jsx4(MenuBtn, { icon: "play", label: "▶ 执行", onClick: () => {
+                  /* @__PURE__ */ jsx5(MenuBtn, { icon: "play", label: "▶ 执行", onClick: () => {
                     setExecOpen(true);
                     onMenuOpenChange(null);
                   } }),
-                  /* @__PURE__ */ jsx4(MenuBtn, { icon: "history", label: "↻ 顺延", onClick: () => {
+                  /* @__PURE__ */ jsx5(MenuBtn, { icon: "history", label: "↻ 顺延", onClick: () => {
                     doDefer.mutate();
                     onMenuOpenChange(null);
                   } }),
-                  /* @__PURE__ */ jsx4(MenuBtn, { icon: "edit", label: "✎ 编辑", onClick: () => {
+                  /* @__PURE__ */ jsx5(MenuBtn, { icon: "edit", label: "✎ 编辑", onClick: () => {
                     setEditOpen(true);
                     onMenuOpenChange(null);
                   } }),
-                  /* @__PURE__ */ jsx4(MenuBtn, { icon: "trash", label: "✖ 放弃", onClick: () => {
+                  /* @__PURE__ */ jsx5(MenuBtn, { icon: "trash", label: "✖ 放弃", onClick: () => {
                     doAbandon.mutate();
                     onMenuOpenChange(null);
                   } })
                 ] }),
-                canArchive && card.status !== "todo" && /* @__PURE__ */ jsxs4(Fragment3, { children: [
-                  /* @__PURE__ */ jsx4(MenuBtn, { icon: "check", label: "✓ 归档", onClick: () => {
+                canArchive && card.status !== "todo" && /* @__PURE__ */ jsxs5(Fragment4, { children: [
+                  /* @__PURE__ */ jsx5(MenuBtn, { icon: "check", label: "✓ 归档", onClick: () => {
                     doComplete.mutate();
                     onMenuOpenChange(null);
                   } }),
-                  card.session_id && /* @__PURE__ */ jsx4(MenuBtn, { icon: "link-external", label: "▶ 打开会话", onClick: () => {
-                    host3.navigate("/" + encodeURIComponent(card.session_id));
+                  card.session_id && /* @__PURE__ */ jsx5(MenuBtn, { icon: "link-external", label: "▶ 打开会话", onClick: () => {
+                    host4.navigate("/" + encodeURIComponent(card.session_id));
                     onMenuOpenChange(null);
                   } })
                 ] }),
-                sectionKey === "task" && card.status === "abandoned" && /* @__PURE__ */ jsx4(MenuBtn, { icon: "refresh", label: "↩ 重新打开", onClick: () => {
+                sectionKey === "task" && card.status === "abandoned" && /* @__PURE__ */ jsx5(MenuBtn, { icon: "refresh", label: "↩ 重新打开", onClick: () => {
                   doReopen.mutate();
                   onMenuOpenChange(null);
                 } }),
-                sectionKey === "done" && /* @__PURE__ */ jsxs4(Fragment3, { children: [
-                  card.session_id && /* @__PURE__ */ jsx4(MenuBtn, { icon: "link-external", label: "▶ 打开会话", onClick: () => {
-                    host3.navigate("/" + encodeURIComponent(card.session_id));
+                sectionKey === "done" && /* @__PURE__ */ jsxs5(Fragment4, { children: [
+                  card.session_id && /* @__PURE__ */ jsx5(MenuBtn, { icon: "link-external", label: "▶ 打开会话", onClick: () => {
+                    host4.navigate("/" + encodeURIComponent(card.session_id));
                     onMenuOpenChange(null);
                   } }),
-                  /* @__PURE__ */ jsx4(MenuBtn, { icon: "refresh", label: "↩ 回到任务列表", onClick: () => {
+                  /* @__PURE__ */ jsx5(MenuBtn, { icon: "refresh", label: "↩ 回到任务列表", onClick: () => {
                     doReopen.mutate();
                     onMenuOpenChange(null);
                   } }),
-                  /* @__PURE__ */ jsx4(MenuBtn, { icon: "trash", label: "🗑 移到回收站", onClick: () => {
+                  /* @__PURE__ */ jsx5(MenuBtn, { icon: "trash", label: "🗑 移到回收站", onClick: () => {
                     doTrash.mutate();
                     onMenuOpenChange(null);
                   } }),
-                  /* @__PURE__ */ jsx4(MenuBtn, { icon: "trash", label: "🗑 永久删除", onClick: () => {
+                  /* @__PURE__ */ jsx5(MenuBtn, { icon: "trash", label: "🗑 永久删除", onClick: () => {
                     if (confirm("确定永久删除？不可恢复。")) {
                       doDelete.mutate();
                       onMenuOpenChange(null);
                     }
                   } })
                 ] }),
-                sectionKey === "trash" && /* @__PURE__ */ jsxs4(Fragment3, { children: [
-                  /* @__PURE__ */ jsx4(MenuBtn, { icon: "refresh", label: "↩ 还原", onClick: () => {
+                sectionKey === "trash" && /* @__PURE__ */ jsxs5(Fragment4, { children: [
+                  /* @__PURE__ */ jsx5(MenuBtn, { icon: "refresh", label: "↩ 还原", onClick: () => {
                     doRestore.mutate();
                     onMenuOpenChange(null);
                   } }),
-                  /* @__PURE__ */ jsx4(MenuBtn, { icon: "trash", label: "🗑 永久删除", onClick: () => {
+                  /* @__PURE__ */ jsx5(MenuBtn, { icon: "trash", label: "🗑 永久删除", onClick: () => {
                     if (confirm("确定永久删除？不可恢复。")) {
                       doDelete.mutate();
                       onMenuOpenChange(null);
                     }
                   } })
                 ] }),
-                sectionKey !== "task" && sectionKey !== "done" && sectionKey !== "trash" && card.entry_count > 0 && /* @__PURE__ */ jsxs4(Fragment3, { children: [
-                  /* @__PURE__ */ jsx4(MenuBtn, { icon: "check", label: "✓ 确认处理", onClick: () => {
+                sectionKey !== "task" && sectionKey !== "done" && sectionKey !== "trash" && card.entry_count > 0 && /* @__PURE__ */ jsxs5(Fragment4, { children: [
+                  /* @__PURE__ */ jsx5(MenuBtn, { icon: "check", label: "✓ 确认处理", onClick: () => {
                     doResolve.mutate();
                     onMenuOpenChange(null);
                   } }),
-                  /* @__PURE__ */ jsx4(MenuBtn, { icon: "play", label: "▶ 执行", onClick: () => {
+                  /* @__PURE__ */ jsx5(MenuBtn, { icon: "play", label: "▶ 执行", onClick: () => {
                     setExecOpen(true);
                     onMenuOpenChange(null);
                   } }),
-                  /* @__PURE__ */ jsx4(MenuBtn, { icon: "arrow-right", label: "↻ 转任务", onClick: () => {
+                  /* @__PURE__ */ jsx5(MenuBtn, { icon: "arrow-right", label: "↻ 转任务", onClick: () => {
                     doToTask.mutate();
                     onMenuOpenChange(null);
                   } }),
-                  /* @__PURE__ */ jsx4(MenuBtn, { icon: "edit", label: "✎ 编辑", onClick: () => {
+                  /* @__PURE__ */ jsx5(MenuBtn, { icon: "edit", label: "✎ 编辑", onClick: () => {
                     setEditOpen(true);
                     onMenuOpenChange(null);
                   } })
                 ] }),
-                /* @__PURE__ */ jsx4(MenuBtn, { icon: "eye", label: "👁 预览", onClick: () => {
+                /* @__PURE__ */ jsx5(MenuBtn, { icon: "eye", label: "👁 预览", onClick: () => {
                   onPreview(card);
                   onMenuOpenChange(null);
                 } }),
-                /* @__PURE__ */ jsx4(MenuBtn, { icon: "file", label: "📂 复制路径", onClick: () => {
+                /* @__PURE__ */ jsx5(MenuBtn, { icon: "file", label: "📂 复制路径", onClick: () => {
                   copyPath();
                   onMenuOpenChange(null);
                 } })
@@ -1346,7 +2029,7 @@ function WbCardView({ card, sectionKey, onPreview, openMenuKey, onMenuOpenChange
         ]
       }
     ),
-    execOpen && /* @__PURE__ */ jsx4(
+    execOpen && /* @__PURE__ */ jsx5(
       ExecEditDialog,
       {
         card,
@@ -1357,7 +2040,7 @@ function WbCardView({ card, sectionKey, onPreview, openMenuKey, onMenuOpenChange
         }
       }
     ),
-    editOpen && /* @__PURE__ */ jsx4(
+    editOpen && /* @__PURE__ */ jsx5(
       EditDialog,
       {
         card,
@@ -1367,13 +2050,13 @@ function WbCardView({ card, sectionKey, onPreview, openMenuKey, onMenuOpenChange
           try {
             const res = await editEntry({ dir: card.dir, file: card.file, entry_title: card.entry_title || void 0, title: o.title, content: o.content, due: o.due });
             if (!res.ok) {
-              host3.notify({ kind: "error", message: res.error || "保存失败" });
+              host4.notify({ kind: "error", message: res.error || "保存失败" });
               return;
             }
             invalidateBoard();
-            host3.notify({ kind: "success", message: "已保存" });
+            host4.notify({ kind: "success", message: "已保存" });
           } catch (err) {
-            host3.notify({ kind: "error", message: String(err) });
+            host4.notify({ kind: "error", message: String(err) });
           }
         }
       }
@@ -1381,7 +2064,7 @@ function WbCardView({ card, sectionKey, onPreview, openMenuKey, onMenuOpenChange
   ] });
 }
 function MenuBtn({ icon, label, onClick }) {
-  return /* @__PURE__ */ jsx4(
+  return /* @__PURE__ */ jsx5(
     "button",
     {
       className: "flex w-full items-center gap-2 rounded px-2 py-1 text-left text-(--ui-text-primary)\n                 hover:bg-(--ui-stroke-secondary)",
@@ -1395,16 +2078,16 @@ function WbSectionView({ section, onPreview, openMenuKey, onMenuOpenChange, mult
   const meta = partitionMeta(section.key);
   const label = section.label ?? meta.label;
   const collapsedOverride = useValue2($collapsedSections)[section.key];
-  const [showAllArchived, setShowAllArchived] = useState3(true);
+  const [showAllArchived, setShowAllArchived] = useState4(true);
   const filterText = useValue2($filterText).toLowerCase();
   const tagFilter = useValue2($tagFilter);
   const showArchived = useValue2($showArchived);
   const dueFilter = useValue2($dueFilter);
-  const todayLocal = useMemo2(() => {
+  const todayLocal = useMemo3(() => {
     const n = /* @__PURE__ */ new Date();
     return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, "0")}-${String(n.getDate()).padStart(2, "0")}`;
   }, []);
-  const expanded = useMemo2(() => {
+  const expanded = useMemo3(() => {
     const out = [];
     for (const card of section.files) {
       if (card.entry_count > 0 && card.entries.length > 0) {
@@ -1419,7 +2102,7 @@ function WbSectionView({ section, onPreview, openMenuKey, onMenuOpenChange, mult
     }
     return out;
   }, [section.files, section.key]);
-  const filtered = useMemo2(() => {
+  const filtered = useMemo3(() => {
     if (!filterText && (section.key === "done" || section.key === "trash") && !showArchived) {
       return [];
     }
@@ -1444,7 +2127,7 @@ function WbSectionView({ section, onPreview, openMenuKey, onMenuOpenChange, mult
     return null;
   }
   if (collapsed) {
-    return /* @__PURE__ */ jsxs4(
+    return /* @__PURE__ */ jsxs5(
       "button",
       {
         type: "button",
@@ -1453,34 +2136,34 @@ function WbSectionView({ section, onPreview, openMenuKey, onMenuOpenChange, mult
         "aria-label": `展开${label}`,
         title: `展开${label}`,
         children: [
-          /* @__PURE__ */ jsx4("span", { className: "grid h-5 shrink-0 place-items-center", children: /* @__PURE__ */ jsx4("span", { className: "size-1.5 rounded-full", style: { backgroundColor: meta.tone } }) }),
-          /* @__PURE__ */ jsx4("span", { className: "text-[0.6875rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary) [writing-mode:vertical-rl]", children: meta.label }),
-          cardCount > 0 && /* @__PURE__ */ jsx4("span", { className: "text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)", children: cardCount })
+          /* @__PURE__ */ jsx5("span", { className: "grid h-5 shrink-0 place-items-center", children: /* @__PURE__ */ jsx5("span", { className: "size-1.5 rounded-full", style: { backgroundColor: meta.tone } }) }),
+          /* @__PURE__ */ jsx5("span", { className: "text-[0.6875rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary) [writing-mode:vertical-rl]", children: meta.label }),
+          cardCount > 0 && /* @__PURE__ */ jsx5("span", { className: "text-[0.6875rem] tabular-nums text-(--ui-text-quaternary)", children: cardCount })
         ]
       }
     );
   }
-  return /* @__PURE__ */ jsxs4("div", { className: "wb-section flex min-h-0 max-h-full shrink-0 flex-col rounded-lg p-2 transition-colors bg-[color-mix(in_srgb,var(--ui-bg-quinary)_50%,transparent)]", children: [
-    /* @__PURE__ */ jsxs4(
+  return /* @__PURE__ */ jsxs5("div", { className: "wb-section flex min-h-0 max-h-full shrink-0 flex-col rounded-lg p-2 transition-colors bg-[color-mix(in_srgb,var(--ui-bg-quinary)_50%,transparent)]", children: [
+    /* @__PURE__ */ jsxs5(
       "button",
       {
-        className: cn3(
+        className: cn4(
           "flex h-6 items-center gap-1.5 rounded px-1 text-left",
           "text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary)"
         ),
         onClick: toggleCollapse,
         type: "button",
         children: [
-          /* @__PURE__ */ jsx4(Codicon3, { name: collapsed ? "chevron-right" : "chevron-down", size: "0.7rem" }),
-          /* @__PURE__ */ jsx4("span", { className: "size-1.5 rounded-full", style: { backgroundColor: meta.tone } }),
-          /* @__PURE__ */ jsx4("span", { className: "text-[0.8125rem] font-semibold", children: label }),
-          /* @__PURE__ */ jsx4("span", { className: "ml-auto text-[0.75rem] tabular-nums text-(--ui-text-quaternary)", children: cardCount })
+          /* @__PURE__ */ jsx5(Codicon4, { name: collapsed ? "chevron-right" : "chevron-down", size: "0.7rem" }),
+          /* @__PURE__ */ jsx5("span", { className: "size-1.5 rounded-full", style: { backgroundColor: meta.tone } }),
+          /* @__PURE__ */ jsx5("span", { className: "text-[0.8125rem] font-semibold", children: label }),
+          /* @__PURE__ */ jsx5("span", { className: "ml-auto text-[0.75rem] tabular-nums text-(--ui-text-quaternary)", children: cardCount })
         ]
       }
     ),
-    !collapsed && /* @__PURE__ */ jsxs4("div", { className: "flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto", children: [
-      filtered.length === 0 && /* @__PURE__ */ jsx4("span", { className: "px-2 py-3 text-center text-[0.75rem] text-(--ui-text-quaternary)", children: "暂无条目" }),
-      visible.map((card) => /* @__PURE__ */ jsx4(CardErrorBoundary, { children: /* @__PURE__ */ jsx4(
+    !collapsed && /* @__PURE__ */ jsxs5("div", { className: "flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto", children: [
+      filtered.length === 0 && /* @__PURE__ */ jsx5("span", { className: "px-2 py-3 text-center text-[0.75rem] text-(--ui-text-quaternary)", children: "暂无条目" }),
+      visible.map((card) => /* @__PURE__ */ jsx5(CardErrorBoundary, { children: /* @__PURE__ */ jsx5(
         WbCardView,
         {
           card,
@@ -1495,7 +2178,7 @@ function WbSectionView({ section, onPreview, openMenuKey, onMenuOpenChange, mult
           onOpenConversations
         }
       ) }, card.file + (card.entry_title || ""))),
-      archivedPreview && filtered.length > ARCHIVED_PREVIEW_LIMIT && !showAllArchived && /* @__PURE__ */ jsxs4(
+      archivedPreview && filtered.length > ARCHIVED_PREVIEW_LIMIT && !showAllArchived && /* @__PURE__ */ jsxs5(
         "button",
         {
           type: "button",
@@ -1545,14 +2228,14 @@ function extractEntrySection(md, entryTitle) {
   return /^##\s+[^\n]+$/.test(sec) ? "" : sec;
 }
 function ExecEditDialog({ card, onClose, onConfirm }) {
-  const [title, setTitle] = useState3(card.title || card.file.replace(/\.md$/, ""));
-  const [content, setContent] = useState3("");
-  const [due, setDue] = useState3(card.due || "");
-  const [rawBody, setRawBody] = useState3("");
-  const [rawOriginal, setRawOriginal] = useState3("");
-  const [editingRaw, setEditingRaw] = useState3(false);
-  const [busy, setBusy] = useState3(false);
-  useEffect2(() => {
+  const [title, setTitle] = useState4(card.title || card.file.replace(/\.md$/, ""));
+  const [content, setContent] = useState4("");
+  const [due, setDue] = useState4(card.due || "");
+  const [rawBody, setRawBody] = useState4("");
+  const [rawOriginal, setRawOriginal] = useState4("");
+  const [editingRaw, setEditingRaw] = useState4(false);
+  const [busy, setBusy] = useState4(false);
+  useEffect3(() => {
     let cancelled = false;
     void fetchFile(card.dir, card.file).then((res) => {
       if (cancelled) return;
@@ -1570,7 +2253,7 @@ function ExecEditDialog({ card, onClose, onConfirm }) {
   const submit = async () => {
     const t = title.trim();
     if (!t) {
-      host3.notify({ kind: "error", message: "标题不能为空" });
+      host4.notify({ kind: "error", message: "标题不能为空" });
       return;
     }
     setBusy(true);
@@ -1578,7 +2261,7 @@ function ExecEditDialog({ card, onClose, onConfirm }) {
       if (!card.entry_title && editingRaw && rawBody.trim() !== rawOriginal.trim()) {
         const amendRes = await editEntry({ dir: card.dir, file: card.file, amend: true, content: rawBody.trim() });
         if (!amendRes.ok) {
-          host3.notify({ kind: "error", message: `修正原文失败：${amendRes.error || "未知错误"}` });
+          host4.notify({ kind: "error", message: `修正原文失败：${amendRes.error || "未知错误"}` });
           return;
         }
       }
@@ -1588,30 +2271,30 @@ function ExecEditDialog({ card, onClose, onConfirm }) {
     }
   };
   const field = "w-full rounded border border-(--ui-stroke-secondary) bg-(--ui-bg) px-2 py-1 text-[0.75rem] text-(--ui-text-primary) outline-none focus:border-(--ui-accent)";
-  return /* @__PURE__ */ jsx4(Dialog, { open: true, onOpenChange: (o) => {
+  return /* @__PURE__ */ jsx5(Dialog, { open: true, onOpenChange: (o) => {
     if (!o) onClose();
-  }, children: /* @__PURE__ */ jsxs4(
+  }, children: /* @__PURE__ */ jsxs5(
     DialogContent,
     {
       className: "wb-dialog",
       style: { width: "min(52rem, 94vw)", maxWidth: "94vw" },
       children: [
-        /* @__PURE__ */ jsx4(DialogHeader, { children: /* @__PURE__ */ jsx4(DialogTitle, { children: "▶ 执行前编辑" }) }),
-        /* @__PURE__ */ jsxs4("div", { className: "flex flex-col gap-2", children: [
-          /* @__PURE__ */ jsxs4("label", { className: "flex flex-col gap-1 text-[0.8125rem] text-(--ui-text-secondary)", children: [
+        /* @__PURE__ */ jsx5(DialogHeader, { children: /* @__PURE__ */ jsx5(DialogTitle, { children: "▶ 执行前编辑" }) }),
+        /* @__PURE__ */ jsxs5("div", { className: "flex flex-col gap-2", children: [
+          /* @__PURE__ */ jsxs5("label", { className: "flex flex-col gap-1 text-[0.8125rem] text-(--ui-text-secondary)", children: [
             "标题",
-            /* @__PURE__ */ jsx4("input", { className: field, value: title, onChange: (e) => setTitle(e.target.value) })
+            /* @__PURE__ */ jsx5("input", { className: field, value: title, onChange: (e) => setTitle(e.target.value) })
           ] }),
-          /* @__PURE__ */ jsxs4("label", { className: "flex flex-col gap-1 text-[0.8125rem] text-(--ui-text-secondary)", children: [
+          /* @__PURE__ */ jsxs5("label", { className: "flex flex-col gap-1 text-[0.8125rem] text-(--ui-text-secondary)", children: [
             "内容（执行前补充）",
-            /* @__PURE__ */ jsx4("textarea", { className: field + " min-h-[5rem] resize-y", value: content, onChange: (e) => setContent(e.target.value), placeholder: "可选：补充执行要求（如「只研究，不摄入 Obsidian」）" })
+            /* @__PURE__ */ jsx5("textarea", { className: field + " min-h-[5rem] resize-y", value: content, onChange: (e) => setContent(e.target.value), placeholder: "可选：补充执行要求（如「只研究，不摄入 Obsidian」）" })
           ] }),
-          /* @__PURE__ */ jsx4("div", { className: "my-1 border-t border-(--ui-stroke-secondary)", "aria-hidden": "true" }),
-          /* @__PURE__ */ jsxs4("label", { className: "flex flex-col gap-1 text-[0.8125rem] text-(--ui-text-secondary)", children: [
-            /* @__PURE__ */ jsxs4("span", { className: "flex items-center justify-between", children: [
+          /* @__PURE__ */ jsx5("div", { className: "my-1 border-t border-(--ui-stroke-secondary)", "aria-hidden": "true" }),
+          /* @__PURE__ */ jsxs5("label", { className: "flex flex-col gap-1 text-[0.8125rem] text-(--ui-text-secondary)", children: [
+            /* @__PURE__ */ jsxs5("span", { className: "flex items-center justify-between", children: [
               "原始内容",
               editingRaw ? "（修正模式）" : "（只读）",
-              card.entry_title ? /* @__PURE__ */ jsx4("span", { className: "text-[0.6875rem] text-(--ui-text-quaternary)", children: "条目内容（修正请用 ✎ 编辑）" }) : /* @__PURE__ */ jsx4(
+              card.entry_title ? /* @__PURE__ */ jsx5("span", { className: "text-[0.6875rem] text-(--ui-text-quaternary)", children: "条目内容（修正请用 ✎ 编辑）" }) : /* @__PURE__ */ jsx5(
                 "button",
                 {
                   type: "button",
@@ -1621,37 +2304,37 @@ function ExecEditDialog({ card, onClose, onConfirm }) {
                 }
               )
             ] }),
-            editingRaw ? /* @__PURE__ */ jsx4(
+            editingRaw ? /* @__PURE__ */ jsx5(
               "textarea",
               {
                 className: field + " min-h-[8rem] resize-y",
                 value: rawBody,
                 onChange: (e) => setRawBody(e.target.value)
               }
-            ) : /* @__PURE__ */ jsx4("div", { className: field + " max-h-[12rem] overflow-y-auto whitespace-pre-wrap break-words", children: rawBody || "（无额外内容）" })
+            ) : /* @__PURE__ */ jsx5("div", { className: field + " max-h-[12rem] overflow-y-auto whitespace-pre-wrap break-words", children: rawBody || "（无额外内容）" })
           ] }),
-          /* @__PURE__ */ jsxs4("label", { className: "flex flex-col gap-1 text-[0.8125rem] text-(--ui-text-secondary)", children: [
+          /* @__PURE__ */ jsxs5("label", { className: "flex flex-col gap-1 text-[0.8125rem] text-(--ui-text-secondary)", children: [
             "Due",
-            /* @__PURE__ */ jsx4("input", { className: field, type: "date", value: due, onChange: (e) => setDue(e.target.value) })
+            /* @__PURE__ */ jsx5("input", { className: field, type: "date", value: due, onChange: (e) => setDue(e.target.value) })
           ] })
         ] }),
-        /* @__PURE__ */ jsxs4(DialogFooter, { children: [
-          /* @__PURE__ */ jsx4(Button2, { size: "sm", variant: "outline", onClick: onClose, children: "取消" }),
-          /* @__PURE__ */ jsx4(Button2, { size: "sm", onClick: submit, disabled: busy, children: busy ? "执行中…" : "确认执行" })
+        /* @__PURE__ */ jsxs5(DialogFooter, { children: [
+          /* @__PURE__ */ jsx5(Button2, { size: "sm", variant: "outline", onClick: onClose, children: "取消" }),
+          /* @__PURE__ */ jsx5(Button2, { size: "sm", onClick: submit, disabled: busy, children: busy ? "执行中…" : "确认执行" })
         ] })
       ]
     }
   ) });
 }
 function EditDialog({ card, onClose, onConfirm }) {
-  const [title, setTitle] = useState3(card.title || card.file.replace(/\.md$/, ""));
-  const [content, setContent] = useState3("");
-  const [due, setDue] = useState3(card.due || "");
-  const [busy, setBusy] = useState3(false);
+  const [title, setTitle] = useState4(card.title || card.file.replace(/\.md$/, ""));
+  const [content, setContent] = useState4("");
+  const [due, setDue] = useState4(card.due || "");
+  const [busy, setBusy] = useState4(false);
   const submit = async () => {
     const t = title.trim();
     if (!t) {
-      host3.notify({ kind: "error", message: "标题不能为空" });
+      host4.notify({ kind: "error", message: "标题不能为空" });
       return;
     }
     setBusy(true);
@@ -1662,41 +2345,41 @@ function EditDialog({ card, onClose, onConfirm }) {
     }
   };
   const field = "w-full rounded border border-(--ui-stroke-secondary) bg-(--ui-bg) px-2 py-1 text-[0.75rem] text-(--ui-text-primary) outline-none focus:border-(--ui-accent)";
-  return /* @__PURE__ */ jsx4(Dialog, { open: true, onOpenChange: (o) => {
+  return /* @__PURE__ */ jsx5(Dialog, { open: true, onOpenChange: (o) => {
     if (!o) onClose();
-  }, children: /* @__PURE__ */ jsxs4(
+  }, children: /* @__PURE__ */ jsxs5(
     DialogContent,
     {
       className: "wb-dialog",
       style: { width: "min(52rem, 94vw)", maxWidth: "94vw" },
       children: [
-        /* @__PURE__ */ jsx4(DialogHeader, { children: /* @__PURE__ */ jsx4(DialogTitle, { children: "✎ 编辑" }) }),
-        /* @__PURE__ */ jsxs4("div", { className: "flex flex-col gap-2", children: [
-          /* @__PURE__ */ jsxs4("label", { className: "flex flex-col gap-1 text-[0.8125rem] text-(--ui-text-secondary)", children: [
+        /* @__PURE__ */ jsx5(DialogHeader, { children: /* @__PURE__ */ jsx5(DialogTitle, { children: "✎ 编辑" }) }),
+        /* @__PURE__ */ jsxs5("div", { className: "flex flex-col gap-2", children: [
+          /* @__PURE__ */ jsxs5("label", { className: "flex flex-col gap-1 text-[0.8125rem] text-(--ui-text-secondary)", children: [
             "标题",
-            /* @__PURE__ */ jsx4("input", { className: field, value: title, onChange: (e) => setTitle(e.target.value) })
+            /* @__PURE__ */ jsx5("input", { className: field, value: title, onChange: (e) => setTitle(e.target.value) })
           ] }),
-          /* @__PURE__ */ jsxs4("label", { className: "flex flex-col gap-1 text-[0.8125rem] text-(--ui-text-secondary)", children: [
+          /* @__PURE__ */ jsxs5("label", { className: "flex flex-col gap-1 text-[0.8125rem] text-(--ui-text-secondary)", children: [
             "内容（备注/补充）",
-            /* @__PURE__ */ jsx4("textarea", { className: field + " min-h-[6rem] resize-y", value: content, onChange: (e) => setContent(e.target.value) })
+            /* @__PURE__ */ jsx5("textarea", { className: field + " min-h-[6rem] resize-y", value: content, onChange: (e) => setContent(e.target.value) })
           ] }),
-          /* @__PURE__ */ jsxs4("label", { className: "flex flex-col gap-1 text-[0.8125rem] text-(--ui-text-secondary)", children: [
+          /* @__PURE__ */ jsxs5("label", { className: "flex flex-col gap-1 text-[0.8125rem] text-(--ui-text-secondary)", children: [
             "Due",
-            /* @__PURE__ */ jsx4("input", { className: field, type: "date", value: due, onChange: (e) => setDue(e.target.value) })
+            /* @__PURE__ */ jsx5("input", { className: field, type: "date", value: due, onChange: (e) => setDue(e.target.value) })
           ] })
         ] }),
-        /* @__PURE__ */ jsxs4(DialogFooter, { children: [
-          /* @__PURE__ */ jsx4(Button2, { size: "sm", variant: "outline", onClick: onClose, children: "取消" }),
-          /* @__PURE__ */ jsx4(Button2, { size: "sm", onClick: submit, disabled: busy, children: busy ? "保存中…" : "保存" })
+        /* @__PURE__ */ jsxs5(DialogFooter, { children: [
+          /* @__PURE__ */ jsx5(Button2, { size: "sm", variant: "outline", onClick: onClose, children: "取消" }),
+          /* @__PURE__ */ jsx5(Button2, { size: "sm", onClick: submit, disabled: busy, children: busy ? "保存中…" : "保存" })
         ] })
       ]
     }
   ) });
 }
 function DialogSelect({ value, onChange, options, placeholder }) {
-  const [open, setOpen] = useState3(false);
+  const [open, setOpen] = useState4(false);
   const ref = useRef2(null);
-  useEffect2(() => {
+  useEffect3(() => {
     if (!open) return;
     const onDown = (e) => {
       if (ref.current && !ref.current.contains(e.target)) {
@@ -1706,12 +2389,12 @@ function DialogSelect({ value, onChange, options, placeholder }) {
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, [open]);
-  useEffect2(() => {
+  useEffect3(() => {
     setOpen(false);
   }, [value]);
   const current = options.find((o) => o.value === value);
-  return /* @__PURE__ */ jsxs4("div", { className: "relative", ref, children: [
-    /* @__PURE__ */ jsxs4(
+  return /* @__PURE__ */ jsxs5("div", { className: "relative", ref, children: [
+    /* @__PURE__ */ jsxs5(
       "button",
       {
         className: "flex w-full items-center justify-between rounded border border-(--ui-stroke-secondary) bg-(--ui-bg) px-2 py-1 text-[0.75rem] text-(--ui-text-primary) outline-none hover:border-(--ui-accent)",
@@ -1720,20 +2403,20 @@ function DialogSelect({ value, onChange, options, placeholder }) {
         "aria-haspopup": "listbox",
         "aria-expanded": open,
         children: [
-          /* @__PURE__ */ jsx4("span", { className: "truncate", children: current ? current.label : placeholder || "" }),
-          /* @__PURE__ */ jsx4(Codicon3, { name: open ? "chevron-up" : "chevron-down", size: "0.7rem" })
+          /* @__PURE__ */ jsx5("span", { className: "truncate", children: current ? current.label : placeholder || "" }),
+          /* @__PURE__ */ jsx5(Codicon4, { name: open ? "chevron-up" : "chevron-down", size: "0.7rem" })
         ]
       }
     ),
-    open && /* @__PURE__ */ jsx4(
+    open && /* @__PURE__ */ jsx5(
       "div",
       {
         className: "absolute top-full left-0 z-50 mt-1 max-h-48 w-full overflow-y-auto rounded border border-(--ui-stroke-secondary) bg-(--ui-bg-elevated) p-1 shadow-lg",
         role: "listbox",
-        children: options.map((o) => /* @__PURE__ */ jsx4(
+        children: options.map((o) => /* @__PURE__ */ jsx5(
           "button",
           {
-            className: cn3(
+            className: cn4(
               "flex w-full items-center rounded px-2 py-1 text-left text-[0.75rem]",
               o.value === value ? "bg-(--ui-accent)/10 text-(--ui-accent)" : "text-(--ui-text-primary) hover:bg-(--ui-stroke-secondary)"
             ),
@@ -1765,19 +2448,19 @@ var NEW_TASK_DIRS = [
   { value: "梦中的邮件", label: "梦中的邮件" }
 ];
 function NewTaskDialog({ board, onClose }) {
-  const [dir, setDir] = useState3("任务");
-  const [title, setTitle] = useState3("");
-  const [due, setDue] = useState3("");
-  const [content, setContent] = useState3("");
-  const [busy, setBusy] = useState3(false);
-  const [suggestion, setSuggestion] = useState3(null);
-  const [picked, setPicked] = useState3(/* @__PURE__ */ new Set());
-  const knownTags = useMemo2(() => {
+  const [dir, setDir] = useState4("任务");
+  const [title, setTitle] = useState4("");
+  const [due, setDue] = useState4("");
+  const [content, setContent] = useState4("");
+  const [busy, setBusy] = useState4(false);
+  const [suggestion, setSuggestion] = useState4(null);
+  const [picked, setPicked] = useState4(/* @__PURE__ */ new Set());
+  const knownTags = useMemo3(() => {
     const set = /* @__PURE__ */ new Set();
     for (const s of board.sections) for (const c of s.files) for (const t of c.tags || []) set.add(t);
     return Array.from(set);
   }, [board]);
-  useEffect2(() => {
+  useEffect3(() => {
     if (!title.trim() && !content.trim()) {
       setSuggestion(null);
       return;
@@ -1790,64 +2473,64 @@ function NewTaskDialog({ board, onClose }) {
   const submit = async () => {
     const t = title.trim();
     if (!t) {
-      host3.notify({ kind: "error", message: "标题不能为空" });
+      host4.notify({ kind: "error", message: "标题不能为空" });
       return;
     }
     setBusy(true);
     try {
       const res = await addEntry({ dir, title: t, due: due || void 0, content: content.trim() || void 0 });
       if (!res.ok) {
-        host3.notify({ kind: "error", message: res.error || "创建失败" });
+        host4.notify({ kind: "error", message: res.error || "创建失败" });
         return;
       }
       if (picked.size > 0 && res.file) {
         const tags = Array.from(picked);
         const ed = await editEntry({ dir, file: res.file, tags });
-        if (!ed.ok) host3.notify({ kind: "warning", message: "标签写入失败：" + (ed.error || "") });
+        if (!ed.ok) host4.notify({ kind: "warning", message: "标签写入失败：" + (ed.error || "") });
       }
       invalidateBoard();
       onClose();
     } catch (err) {
-      host3.notify({ kind: "error", message: String(err) });
+      host4.notify({ kind: "error", message: String(err) });
     } finally {
       setBusy(false);
     }
   };
   const field = "w-full rounded border border-(--ui-stroke-secondary) bg-(--ui-bg) px-2 py-1 text-[0.75rem] text-(--ui-text-primary) outline-none focus:border-(--ui-accent)";
-  return /* @__PURE__ */ jsx4(Dialog, { open: true, onOpenChange: (o) => {
+  return /* @__PURE__ */ jsx5(Dialog, { open: true, onOpenChange: (o) => {
     if (!o) onClose();
-  }, children: /* @__PURE__ */ jsxs4(
+  }, children: /* @__PURE__ */ jsxs5(
     DialogContent,
     {
       className: "wb-dialog",
       style: { width: "min(52rem, 94vw)", maxWidth: "94vw" },
       children: [
-        /* @__PURE__ */ jsx4(DialogHeader, { children: /* @__PURE__ */ jsx4(DialogTitle, { children: "＋ 新建任务" }) }),
-        /* @__PURE__ */ jsxs4("div", { className: "flex flex-col gap-3", children: [
-          /* @__PURE__ */ jsxs4("label", { className: "flex flex-col gap-1 text-[0.8125rem] text-(--ui-text-secondary)", children: [
+        /* @__PURE__ */ jsx5(DialogHeader, { children: /* @__PURE__ */ jsx5(DialogTitle, { children: "＋ 新建任务" }) }),
+        /* @__PURE__ */ jsxs5("div", { className: "flex flex-col gap-3", children: [
+          /* @__PURE__ */ jsxs5("label", { className: "flex flex-col gap-1 text-[0.8125rem] text-(--ui-text-secondary)", children: [
             "标题（必填）",
-            /* @__PURE__ */ jsx4("input", { className: field, value: title, onChange: (e) => setTitle(e.target.value), placeholder: "任务标题", autoFocus: true })
+            /* @__PURE__ */ jsx5("input", { className: field, value: title, onChange: (e) => setTitle(e.target.value), placeholder: "任务标题", autoFocus: true })
           ] }),
-          /* @__PURE__ */ jsxs4("label", { className: "flex flex-col gap-1 text-[0.8125rem] text-(--ui-text-secondary)", children: [
+          /* @__PURE__ */ jsxs5("label", { className: "flex flex-col gap-1 text-[0.8125rem] text-(--ui-text-secondary)", children: [
             "分区",
-            /* @__PURE__ */ jsx4(DialogSelect, { value: dir, onChange: setDir, options: NEW_TASK_DIRS, placeholder: "选择分区" })
+            /* @__PURE__ */ jsx5(DialogSelect, { value: dir, onChange: setDir, options: NEW_TASK_DIRS, placeholder: "选择分区" })
           ] }),
-          /* @__PURE__ */ jsxs4("label", { className: "flex flex-col gap-1 text-[0.8125rem] text-(--ui-text-secondary)", children: [
+          /* @__PURE__ */ jsxs5("label", { className: "flex flex-col gap-1 text-[0.8125rem] text-(--ui-text-secondary)", children: [
             "Due（截止日期）",
-            /* @__PURE__ */ jsx4("input", { className: field, type: "date", value: due, onChange: (e) => setDue(e.target.value) })
+            /* @__PURE__ */ jsx5("input", { className: field, type: "date", value: due, onChange: (e) => setDue(e.target.value) })
           ] }),
-          /* @__PURE__ */ jsxs4("label", { className: "flex flex-col gap-1 text-[0.8125rem] text-(--ui-text-secondary)", children: [
+          /* @__PURE__ */ jsxs5("label", { className: "flex flex-col gap-1 text-[0.8125rem] text-(--ui-text-secondary)", children: [
             "内容（可选）",
-            /* @__PURE__ */ jsx4("textarea", { className: field + " min-h-24 resize-y", value: content, onChange: (e) => setContent(e.target.value), placeholder: "备注/要求…" })
+            /* @__PURE__ */ jsx5("textarea", { className: field + " min-h-24 resize-y", value: content, onChange: (e) => setContent(e.target.value), placeholder: "备注/要求…" })
           ] }),
-          suggestion && (suggestion.tags.length > 0 || suggestion.low.length > 0) && /* @__PURE__ */ jsxs4("div", { className: "flex flex-wrap items-center gap-1.5", children: [
-            /* @__PURE__ */ jsx4("span", { className: "text-[0.8125rem] text-(--ui-text-tertiary)", children: "✨ 建议标签：" }),
+          suggestion && (suggestion.tags.length > 0 || suggestion.low.length > 0) && /* @__PURE__ */ jsxs5("div", { className: "flex flex-wrap items-center gap-1.5", children: [
+            /* @__PURE__ */ jsx5("span", { className: "text-[0.8125rem] text-(--ui-text-tertiary)", children: "✨ 建议标签：" }),
             suggestion.tags.map((tag) => {
               const active = picked.has(tag);
-              return /* @__PURE__ */ jsx4(
+              return /* @__PURE__ */ jsx5(
                 "button",
                 {
-                  className: cn3(
+                  className: cn4(
                     "rounded px-1.5 py-0.5 text-[0.8125rem] transition-colors",
                     active ? "bg-(--ui-accent) text-(--ui-bg)" : "bg-(--ui-bg-quinary) text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary)"
                   ),
@@ -1865,170 +2548,30 @@ function NewTaskDialog({ board, onClose }) {
                 tag
               );
             }),
-            suggestion.low.length > 0 && /* @__PURE__ */ jsxs4("span", { className: "text-[0.8125rem] text-(--ui-text-quaternary)", children: [
+            suggestion.low.length > 0 && /* @__PURE__ */ jsxs5("span", { className: "text-[0.8125rem] text-(--ui-text-quaternary)", children: [
               "建议标签：",
               suggestion.low.join(" "),
               "（可确认）"
             ] })
           ] })
         ] }),
-        /* @__PURE__ */ jsxs4(DialogFooter, { children: [
-          /* @__PURE__ */ jsx4(Button2, { size: "sm", variant: "outline", onClick: onClose, children: "取消" }),
-          /* @__PURE__ */ jsx4(Button2, { size: "sm", onClick: () => void submit(), disabled: busy, children: busy ? "创建中…" : "创建" })
+        /* @__PURE__ */ jsxs5(DialogFooter, { children: [
+          /* @__PURE__ */ jsx5(Button2, { size: "sm", variant: "outline", onClick: onClose, children: "取消" }),
+          /* @__PURE__ */ jsx5(Button2, { size: "sm", onClick: () => void submit(), disabled: busy, children: busy ? "创建中…" : "创建" })
         ] })
       ]
     }
   ) });
 }
-var BRIEF_TYPE_META = {
-  new_task: { icon: "lightbulb", label: "新任务" },
-  duplicate: { icon: "warning", label: "重复" },
-  blocked: { icon: "stop", label: "阻塞" },
-  overdue: { icon: "calendar", label: "过期重估" },
-  decision: { icon: "question", label: "需决策" }
-};
-function TodayCardRow({ card, onPreview }) {
-  const tone = STATUS_TONE[card.status] || "var(--ui-text-tertiary)";
-  const prio = priorityMeta(card.priority || "");
-  return /* @__PURE__ */ jsxs4(
-    "button",
-    {
-      className: "flex w-full items-center gap-2 rounded-md border border-(--ui-stroke-secondary) px-2.5 py-1.5 text-left transition-colors hover:border-(--ui-accent)",
-      onClick: () => onPreview(card),
-      type: "button",
-      children: [
-        /* @__PURE__ */ jsx4("span", { className: "size-1.5 shrink-0 rounded-full", style: { background: tone } }),
-        prio && /* @__PURE__ */ jsx4("span", { className: "h-3 w-0.5 shrink-0 rounded", style: { background: prio.fg } }),
-        /* @__PURE__ */ jsx4("span", { className: "min-w-0 flex-1 truncate text-[0.75rem] font-medium text-(--ui-text-primary)", children: card.title || card.file.replace(/\.md$/, "") }),
-        card.due && /* @__PURE__ */ jsx4("span", { className: cn3("shrink-0 text-[0.75rem]", isOverdue(card.due) ? "font-semibold text-(--ui-text-danger)" : "text-(--ui-text-tertiary)"), children: card.due })
-      ]
-    }
-  );
-}
-function BriefCardView({ card, onAccept, onIgnore }) {
-  const meta = BRIEF_TYPE_META[card.type] ?? { icon: "info", label: card.type };
-  return /* @__PURE__ */ jsxs4("div", { className: "flex items-start gap-2 rounded-md border border-(--ui-stroke-secondary) px-2.5 py-2", children: [
-    /* @__PURE__ */ jsx4(Codicon3, { name: meta.icon, size: "0.8rem", className: "mt-0.5 shrink-0", style: { color: "var(--ui-accent)" } }),
-    /* @__PURE__ */ jsxs4("div", { className: "min-w-0 flex-1", children: [
-      /* @__PURE__ */ jsx4("div", { className: "text-[0.8125rem] font-semibold text-(--ui-text-primary)", children: card.title }),
-      /* @__PURE__ */ jsx4("div", { className: "mt-0.5 text-[0.75rem] text-(--ui-text-tertiary)", children: card.reason }),
-      /* @__PURE__ */ jsxs4("details", { className: "mt-1 text-[0.75rem] text-(--ui-text-quaternary)", children: [
-        /* @__PURE__ */ jsx4("summary", { className: "cursor-pointer", children: "查看依据" }),
-        /* @__PURE__ */ jsx4("ul", { className: "mt-1 list-disc pl-4", children: card.evidence.map((item) => /* @__PURE__ */ jsx4("li", { children: item }, item)) })
-      ] }),
-      /* @__PURE__ */ jsxs4("div", { className: "mt-1 flex items-center gap-1", children: [
-        onAccept && /* @__PURE__ */ jsx4(
-          "button",
-          {
-            className: "rounded bg-(--ui-accent)/15 px-2 py-1 text-[0.75rem] text-(--ui-accent) hover:bg-(--ui-accent)/25",
-            onClick: onAccept,
-            type: "button",
-            children: "采纳"
-          }
-        ),
-        /* @__PURE__ */ jsx4(
-          "button",
-          {
-            className: "rounded px-2 py-1 text-[0.75rem] text-(--ui-text-tertiary) hover:bg-(--ui-stroke-secondary)",
-            onClick: onIgnore,
-            type: "button",
-            children: "忽略"
-          }
-        )
-      ] })
-    ] }),
-    /* @__PURE__ */ jsx4("span", { className: "shrink-0 rounded bg-(--ui-bg-quinary) px-1 py-0.5 text-[0.75rem] text-(--ui-text-quaternary)", children: "规则建议" })
-  ] });
-}
-function TodayView({ board, onPreview, onGoBoard }) {
-  const [ignored, setIgnored] = useState3(/* @__PURE__ */ new Set());
-  const { data: brief } = useQuery2({
-    queryKey: ["workbench", "brief"],
-    queryFn: fetchBrief,
-    staleTime: 30 * 60 * 1e3
-  });
-  const taskCards = useMemo2(() => board.sections.find((s) => s.key === "task")?.files ?? [], [board]);
-  const today = board.today;
-  const overdue = taskCards.filter((c) => c.status === "todo" && c.due && c.due < today);
-  const dueToday = taskCards.filter((c) => c.status === "todo" && c.due === today);
-  const inProgress = taskCards.filter((c) => c.status === "in_progress");
-  const acceptBrief = async (card) => {
-    if (card.type !== "new_task") return;
-    try {
-      const res = await ingestMessage(`brief-${Date.now()}`, "待验证", card.title);
-      if (res.ok) {
-        host3.notify({ kind: "success", message: "已加入待验证" });
-        invalidateBoard();
-        setIgnored((prev) => new Set(prev).add(card.title));
-      } else {
-        host3.notify({ kind: "warning", message: res.error || "采纳失败" });
-      }
-    } catch (err) {
-      host3.notify({ kind: "error", message: String(err) });
-    }
-  };
-  const visibleCards = (brief?.cards ?? []).filter((c) => !ignored.has(c.title)).slice(0, 5);
-  const emptyAll = overdue.length === 0 && dueToday.length === 0 && inProgress.length === 0;
-  return /* @__PURE__ */ jsx4("div", { className: "flex flex-1 flex-col overflow-y-auto px-3 pb-3", children: /* @__PURE__ */ jsxs4("div", { className: "mx-auto flex w-full max-w-3xl flex-col gap-4 py-3", children: [
-    /* @__PURE__ */ jsxs4("div", { className: "flex flex-col gap-1.5", children: [
-      /* @__PURE__ */ jsxs4("div", { className: "flex items-center gap-1.5", children: [
-        /* @__PURE__ */ jsxs4("span", { className: "text-[0.8125rem] font-semibold text-(--ui-text-danger)", children: [
-          "⚠ 超期 (",
-          overdue.length,
-          ")"
-        ] }),
-        overdue.length > 0 && /* @__PURE__ */ jsx4("button", { className: "ml-auto text-[0.75rem] text-(--ui-accent) hover:underline", onClick: onGoBoard, type: "button", children: "进入看板 →" })
-      ] }),
-      overdue.slice(0, 5).map((c) => /* @__PURE__ */ jsx4(TodayCardRow, { card: c, onPreview }, c.file)),
-      overdue.length > 5 && /* @__PURE__ */ jsxs4("span", { className: "px-1 text-[0.75rem] text-(--ui-text-quaternary)", children: [
-        "还有 ",
-        overdue.length - 5,
-        " 条超期，",
-        /* @__PURE__ */ jsx4("button", { className: "text-(--ui-accent) hover:underline", onClick: onGoBoard, type: "button", children: "进入看板" })
-      ] }),
-      /* @__PURE__ */ jsxs4("span", { className: "mt-2 text-[0.8125rem] font-semibold text-(--ui-text-secondary)", children: [
-        "▸ 今日到期 (",
-        dueToday.length,
-        ")"
-      ] }),
-      dueToday.slice(0, 5).map((c) => /* @__PURE__ */ jsx4(TodayCardRow, { card: c, onPreview }, c.file)),
-      /* @__PURE__ */ jsxs4("span", { className: "mt-2 text-[0.8125rem] font-semibold text-(--ui-text-secondary)", children: [
-        "▸ 进行中 (",
-        inProgress.length,
-        ")"
-      ] }),
-      inProgress.map((c) => /* @__PURE__ */ jsx4(TodayCardRow, { card: c, onPreview }, c.file)),
-      emptyAll && /* @__PURE__ */ jsxs4("div", { className: "rounded-md border border-dashed border-(--ui-stroke-tertiary) px-3 py-4 text-center", children: [
-        /* @__PURE__ */ jsx4("div", { className: "text-[0.75rem] text-(--ui-text-secondary)", children: "今天没有安排 🎉" }),
-        /* @__PURE__ */ jsx4("div", { className: "mt-1 text-[0.75rem] text-(--ui-text-quaternary)", children: "右下角「新建任务」或手机转发到 QQ 群自动收录" })
-      ] })
-    ] }),
-    /* @__PURE__ */ jsxs4("div", { className: "flex flex-col gap-1.5", children: [
-      /* @__PURE__ */ jsxs4("div", { className: "flex items-center gap-1.5", children: [
-        /* @__PURE__ */ jsx4("span", { className: "text-[0.8125rem] font-semibold text-(--ui-text-secondary)", children: "✨ 规则建议" }),
-        /* @__PURE__ */ jsx4("span", { className: "text-[0.75rem] text-(--ui-text-quaternary)", children: "依据任务状态、截止日期和最近结果生成" })
-      ] }),
-      brief?.degraded ? /* @__PURE__ */ jsx4("div", { className: "rounded-md border border-(--ui-stroke-tertiary) px-2.5 py-2 text-[0.75rem] text-(--ui-text-quaternary)", children: "规则建议暂不可用，请稍后重试" }) : visibleCards.length === 0 ? /* @__PURE__ */ jsx4("div", { className: "px-1 text-[0.75rem] text-(--ui-text-quaternary)", children: "暂无建议" }) : visibleCards.map((c) => /* @__PURE__ */ jsx4(
-        BriefCardView,
-        {
-          card: c,
-          onAccept: c.type === "new_task" ? () => void acceptBrief(c) : void 0,
-          onIgnore: () => setIgnored((prev) => new Set(prev).add(c.title))
-        },
-        c.title
-      ))
-    ] })
-  ] }) });
-}
 function WorkbenchBoardPage() {
-  const { data: board, isLoading, error } = useQuery2({
+  const { data: board, isLoading, error } = useQuery3({
     queryKey: BOARD_KEY,
     queryFn: () => fetchBoard(),
     refetchInterval: 3e4
   });
-  const [previewCard, setPreviewCard] = useState3(null);
-  const [openMenuKey, setOpenMenuKey] = useState3(null);
-  useEffect2(() => {
+  const [previewCard, setPreviewCard] = useState4(null);
+  const [openMenuKey, setOpenMenuKey] = useState4(null);
+  useEffect3(() => {
     if (!openMenuKey) return;
     const onDown = (e) => {
       if (e.target instanceof Element && e.target.closest("[data-wb-menu]")) return;
@@ -2037,10 +2580,10 @@ function WorkbenchBoardPage() {
     document.addEventListener("pointerdown", onDown);
     return () => document.removeEventListener("pointerdown", onDown);
   }, [openMenuKey]);
-  const [showNewTask, setShowNewTask] = useState3(false);
-  const [showSettings, setShowSettings] = useState3(false);
-  const [showHealthDetails, setShowHealthDetails] = useState3(false);
-  useEffect2(() => {
+  const [showNewTask, setShowNewTask] = useState4(false);
+  const [showSettings, setShowSettings] = useState4(false);
+  const [showHealthDetails, setShowHealthDetails] = useState4(false);
+  useEffect3(() => {
     if (!showHealthDetails) return;
     const onPointerDown = (event) => {
       if (event.target instanceof Element && event.target.closest("[data-wb-health]")) return;
@@ -2056,9 +2599,9 @@ function WorkbenchBoardPage() {
       document.removeEventListener("keydown", onKeyDown);
     };
   }, [showHealthDetails]);
-  const health = useQuery2({ queryKey: ["workbench", "health"], queryFn: fetchHealth, refetchInterval: 3e4 });
-  const conversations = useQuery2({ queryKey: ["workbench", "conversations"], queryFn: fetchConversations, refetchInterval: 3e4 });
-  const conversationPlatformsByTask = useMemo2(() => {
+  const health = useQuery3({ queryKey: ["workbench", "health"], queryFn: fetchHealth, refetchInterval: 3e4 });
+  const conversations = useQuery3({ queryKey: ["workbench", "conversations"], queryFn: fetchConversations, refetchInterval: 3e4 });
+  const conversationPlatformsByTask = useMemo3(() => {
     const grouped = /* @__PURE__ */ new Map();
     for (const item of conversations.data?.items ?? []) {
       const platforms = grouped.get(item.task_id) ?? /* @__PURE__ */ new Set();
@@ -2067,33 +2610,27 @@ function WorkbenchBoardPage() {
     }
     return new Map(Array.from(grouped, ([taskId, platforms]) => [taskId, Array.from(platforms).sort()]));
   }, [conversations.data?.items]);
-  const settings = useQuery2({ queryKey: ["workbench", "settings"], queryFn: fetchSettings });
+  const settings = useQuery3({ queryKey: ["workbench", "settings"], queryFn: fetchSettings });
   const dueFilter = useValue2($dueFilter);
-  const [bannerDismissedDate, setBannerDismissedDate] = useState3(
+  const [bannerDismissedDate, setBannerDismissedDate] = useState4(
     () => typeof localStorage === "undefined" ? "" : localStorage.getItem("wbDeliveryBannerDismissedDate") || ""
   );
-  const [showToday, setShowToday] = useState3(true);
-  const [showConversations, setShowConversations] = useState3(false);
-  const thoughtSection = board?.sections.find((s) => s.key === "thought");
-  const pendingCount = thoughtSection ? thoughtSection.files.reduce((n, f) => n + (f.entry_count || 0), 0) : 0;
-  const goThoughtBoard = () => {
-    setShowToday(false);
-    $collapsedSections.set({ ...$collapsedSections.get(), thought: false });
-  };
+  const [showLegacy, setShowLegacy] = useState4(false);
+  const [showConversations, setShowConversations] = useState4(false);
   const viewMode = useValue2($viewMode);
   const setViewMode = (m) => $viewMode.set(m);
-  const [multiMode, setMultiMode] = useState3(false);
-  const [selected, setSelected] = useState3(/* @__PURE__ */ new Set());
-  const [batchBusy, setBatchBusy] = useState3(false);
-  const [searchQ, setSearchQ] = useState3("");
-  const [debouncedQ, setDebouncedQ] = useState3("");
-  const [searchOpen, setSearchOpen] = useState3(false);
+  const [multiMode, setMultiMode] = useState4(false);
+  const [selected, setSelected] = useState4(/* @__PURE__ */ new Set());
+  const [batchBusy, setBatchBusy] = useState4(false);
+  const [searchQ, setSearchQ] = useState4("");
+  const [debouncedQ, setDebouncedQ] = useState4("");
+  const [searchOpen, setSearchOpen] = useState4(false);
   const searchRef = useRef2(null);
-  useEffect2(() => {
+  useEffect3(() => {
     const t = setTimeout(() => setDebouncedQ(searchQ.trim()), 250);
     return () => clearTimeout(t);
   }, [searchQ]);
-  useEffect2(() => {
+  useEffect3(() => {
     if (!searchOpen) return;
     const onDown = (e) => {
       if (searchRef.current && !searchRef.current.contains(e.target)) setSearchOpen(false);
@@ -2101,7 +2638,7 @@ function WorkbenchBoardPage() {
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, [searchOpen]);
-  const { data: searchData } = useQuery2({
+  const { data: searchData } = useQuery3({
     queryKey: ["workbench", "search", debouncedQ],
     queryFn: () => fetchSearch(debouncedQ),
     enabled: debouncedQ.length > 0
@@ -2138,44 +2675,39 @@ function WorkbenchBoardPage() {
       const res = await batchAction(action, items);
       const okN = res.summary?.ok ?? 0;
       const failN = res.summary?.fail ?? 0;
-      host3.notify({ kind: failN > 0 ? "warning" : "success", message: `批量归档 ${okN} 项${failN ? `，${failN} 项失败` : ""}` });
+      host4.notify({ kind: failN > 0 ? "warning" : "success", message: `批量归档 ${okN} 项${failN ? `，${failN} 项失败` : ""}` });
       invalidateBoard();
       setSelected(/* @__PURE__ */ new Set());
       setMultiMode(false);
     } catch (err) {
-      host3.notify({ kind: "error", message: String(err) });
+      host4.notify({ kind: "error", message: String(err) });
     } finally {
       setBatchBusy(false);
     }
   };
   if (isLoading) {
-    return /* @__PURE__ */ jsx4("div", { className: "flex h-full items-center justify-center text-sm text-(--ui-text-tertiary)", children: "加载中…" });
+    return /* @__PURE__ */ jsx5("div", { className: "flex h-full items-center justify-center text-sm text-(--ui-text-tertiary)", children: "加载中…" });
   }
   if (error) {
-    return /* @__PURE__ */ jsx4("div", { className: "flex h-full items-center justify-center text-sm text-(--ui-text-danger)", children: "后端不可达" });
+    return /* @__PURE__ */ jsx5("div", { className: "flex h-full items-center justify-center text-sm text-(--ui-red)", children: "后端不可达" });
   }
   if (!board) return null;
   const deliverMissing = settings.data?.ok === true && !settings.data.config.deliver_target;
   const showDeliveryBanner = !!deliverMissing && bannerDismissedDate !== board.today;
   const healthData = health.data;
-  const healthTone = {
-    green: "bg-[#34d399]",
-    yellow: "bg-[#fbbf24]",
-    red: "bg-[#f87171]",
-    disabled: "bg-[#94a3b8]"
-  }[healthData?.status ?? "disabled"];
+  const healthDot = health.isLoading ? "bg-(--ui-stroke-secondary)" : healthData && (healthData.status === "green" || healthData.status === "yellow" || healthData.status === "red") ? { green: "bg-[#34d399]", yellow: "bg-[#fbbf24]", red: "bg-[#f87171]" }[healthData.status] : "bg-(--ui-stroke-secondary)";
   const checkTone = (status) => ({
     green: "bg-[#34d399]",
     yellow: "bg-[#fbbf24]",
     red: "bg-[#f87171]",
     disabled: "bg-[#94a3b8]"
   })[status];
-  const healthLabel = healthData?.label ?? "健康检查…";
-  return /* @__PURE__ */ jsxs4("div", { className: "wb-root flex h-full flex-col", children: [
-    showDeliveryBanner && /* @__PURE__ */ jsxs4("div", { className: "flex items-center gap-2 border-b border-[#fbbf24]/30 bg-[#fbbf24]/10 px-3 py-1.5 text-[0.75rem] text-[#fbbf24]", children: [
-      /* @__PURE__ */ jsx4(Codicon3, { name: "warning", size: "0.8rem" }),
-      /* @__PURE__ */ jsx4("span", { children: "投递目标未配置，日报/提醒不会发送到 QQ。" }),
-      /* @__PURE__ */ jsx4(
+  const healthLabel = health.isLoading ? "健康检查…" : health.error ? "暂时不可用" : { green: "一切正常", yellow: "有点状况", red: "暂时不可用", disabled: "健康检查…" }[healthData?.status ?? "disabled"];
+  return /* @__PURE__ */ jsxs5("div", { className: "wb-root flex h-full flex-col", children: [
+    showDeliveryBanner && /* @__PURE__ */ jsxs5("div", { className: "flex items-center gap-2 border-b border-[#fbbf24]/30 bg-[#fbbf24]/10 px-3 py-1.5 text-[0.75rem] text-[#fbbf24]", children: [
+      /* @__PURE__ */ jsx5(Codicon4, { name: "warning", size: "0.8rem" }),
+      /* @__PURE__ */ jsx5("span", { children: "投递目标未配置，日报/提醒不会发送到 QQ。" }),
+      /* @__PURE__ */ jsx5(
         "button",
         {
           type: "button",
@@ -2184,7 +2716,7 @@ function WorkbenchBoardPage() {
           children: "去设置"
         }
       ),
-      /* @__PURE__ */ jsx4(
+      /* @__PURE__ */ jsx5(
         "button",
         {
           type: "button",
@@ -2197,83 +2729,76 @@ function WorkbenchBoardPage() {
         }
       )
     ] }),
-    /* @__PURE__ */ jsxs4("div", { className: "flex items-center gap-2 border-b border-(--ui-stroke-secondary) px-3 py-2", children: [
-      /* @__PURE__ */ jsx4(Codicon3, { name: "checklist", size: "1rem" }),
-      /* @__PURE__ */ jsx4("span", { className: "text-sm font-semibold", children: "工作台" }),
-      /* @__PURE__ */ jsxs4("div", { className: "flex items-center rounded-md border border-(--ui-stroke-secondary) p-0.5", children: [
-        /* @__PURE__ */ jsx4(
+    /* @__PURE__ */ jsxs5("div", { className: "flex items-center gap-2 border-b border-(--ui-stroke-secondary) px-3 py-2", children: [
+      /* @__PURE__ */ jsx5(Codicon4, { name: "checklist", size: "1rem" }),
+      /* @__PURE__ */ jsx5("span", { className: "text-sm font-semibold", children: "工作台" }),
+      /* @__PURE__ */ jsxs5("div", { className: "flex items-center rounded-md border border-(--ui-stroke-secondary) p-0.5", children: [
+        /* @__PURE__ */ jsx5(
           "button",
           {
             type: "button",
-            className: cn3(
+            className: cn4(
               "rounded px-2 py-0.5 text-[0.8125rem] transition-colors",
-              showToday && !showConversations ? "bg-(--ui-accent) text-white" : "text-(--ui-text-tertiary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-text-primary)"
+              !showLegacy && !showConversations ? "bg-(--ui-accent) text-white" : "text-(--ui-text-tertiary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-text-primary)"
             ),
             onClick: () => {
-              setShowToday(true);
+              setShowLegacy(false);
               setShowConversations(false);
             },
-            children: "今日"
+            children: "首页"
           }
         ),
-        /* @__PURE__ */ jsx4(
+        /* @__PURE__ */ jsx5(
           "button",
           {
             type: "button",
-            className: cn3(
+            className: cn4(
               "rounded px-2 py-0.5 text-[0.8125rem] transition-colors",
-              !showToday && !showConversations ? "bg-(--ui-accent) text-white" : "text-(--ui-text-tertiary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-text-primary)"
+              showLegacy && !showConversations ? "bg-(--ui-accent) text-white" : "text-(--ui-text-tertiary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-text-primary)"
             ),
             onClick: () => {
-              setShowToday(false);
+              setShowLegacy(true);
               setShowConversations(false);
             },
-            children: "看板"
+            children: "旧版数据"
           }
         ),
-        /* @__PURE__ */ jsx4(
+        /* @__PURE__ */ jsx5(
           "button",
           {
             type: "button",
-            className: cn3(
+            className: cn4(
               "rounded px-2 py-0.5 text-[0.8125rem] transition-colors",
               showConversations ? "bg-(--ui-accent) text-white" : "text-(--ui-text-tertiary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-text-primary)"
             ),
             onClick: () => {
-              setShowToday(false);
+              setShowLegacy(false);
               setShowConversations(true);
             },
             children: "消息任务"
           }
         )
       ] }),
-      /* @__PURE__ */ jsxs4("span", { className: "text-[0.75rem] text-(--ui-text-quaternary)", children: [
+      /* @__PURE__ */ jsxs5("span", { className: "text-[0.75rem] text-(--ui-text-quaternary)", children: [
         board.totals.pending,
         " Pending / ",
         board.totals.total,
         " Total"
       ] }),
-      /* @__PURE__ */ jsxs4("div", { className: "ml-auto flex items-center gap-2", children: [
-        showToday && pendingCount > 0 && /* @__PURE__ */ jsxs4(Button2, { size: "sm", variant: "outline", onClick: goThoughtBoard, children: [
-          /* @__PURE__ */ jsx4(Codicon3, { name: "inbox", size: "0.7rem" }),
-          /* @__PURE__ */ jsxs4("span", { className: "ml-1", children: [
-            "待确认 ",
-            pendingCount
-          ] })
-        ] }),
-        !multiMode && /* @__PURE__ */ jsxs4(Button2, { size: "sm", variant: "outline", onClick: () => {
+      /* @__PURE__ */ jsxs5("div", { className: "ml-auto flex items-center gap-2", children: [
+        !multiMode && /* @__PURE__ */ jsxs5(Button2, { size: "sm", variant: "outline", onClick: () => {
           setSelected(/* @__PURE__ */ new Set());
           setMultiMode(true);
         }, children: [
-          /* @__PURE__ */ jsx4(Codicon3, { name: "checklist", size: "0.7rem" }),
-          /* @__PURE__ */ jsx4("span", { className: "ml-1", children: "批量" })
+          /* @__PURE__ */ jsx5(Codicon4, { name: "checklist", size: "0.7rem" }),
+          /* @__PURE__ */ jsx5("span", { className: "ml-1", children: "批量" })
         ] }),
-        /* @__PURE__ */ jsxs4(Button2, { size: "sm", onClick: () => setShowNewTask(true), children: [
-          /* @__PURE__ */ jsx4(Codicon3, { name: "add", size: "0.7rem" }),
-          /* @__PURE__ */ jsx4("span", { className: "ml-1", children: "新建任务" })
+        /* @__PURE__ */ jsxs5(Button2, { size: "sm", onClick: () => setShowNewTask(true), children: [
+          /* @__PURE__ */ jsx5(Codicon4, { name: "add", size: "0.7rem" }),
+          /* @__PURE__ */ jsx5("span", { className: "ml-1", children: "新建任务" })
         ] }),
-        /* @__PURE__ */ jsxs4("div", { className: "relative", ref: searchRef, children: [
-          /* @__PURE__ */ jsx4(
+        /* @__PURE__ */ jsxs5("div", { className: "relative", ref: searchRef, children: [
+          /* @__PURE__ */ jsx5(
             Input,
             {
               className: "h-7 w-52 text-[0.8125rem]",
@@ -2292,7 +2817,7 @@ function WorkbenchBoardPage() {
               }
             }
           ),
-          searchOpen && debouncedQ && searchData && /* @__PURE__ */ jsx4("div", { className: "absolute right-0 top-full z-50 mt-1 max-h-80 w-72 overflow-y-auto rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-elevated) p-1 text-[0.8125rem] shadow-lg", children: searchData.results.length === 0 ? /* @__PURE__ */ jsx4("div", { className: "px-2 py-2 text-(--ui-text-tertiary)", children: "无匹配结果" }) : searchData.results.map((r) => /* @__PURE__ */ jsxs4(
+          searchOpen && debouncedQ && searchData && /* @__PURE__ */ jsx5("div", { className: "absolute right-0 top-full z-50 mt-1 max-h-80 w-72 overflow-y-auto rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-elevated) p-1 text-[0.8125rem] shadow-lg", children: searchData.results.length === 0 ? /* @__PURE__ */ jsx5("div", { className: "px-2 py-2 text-(--ui-text-tertiary)", children: "无匹配结果" }) : searchData.results.map((r) => /* @__PURE__ */ jsxs5(
             "button",
             {
               type: "button",
@@ -2302,15 +2827,15 @@ function WorkbenchBoardPage() {
                 setSearchOpen(false);
               },
               children: [
-                /* @__PURE__ */ jsx4("span", { className: "shrink-0 text-[0.75rem] text-(--ui-text-tertiary)", children: partitionMeta(r.key).label }),
-                /* @__PURE__ */ jsx4("span", { className: "min-w-0 flex-1 truncate font-medium text-(--ui-text-primary)", children: r.title }),
-                r.tags.slice(0, 2).map((t) => /* @__PURE__ */ jsx4("span", { className: "shrink-0 rounded bg-(--ui-accent)/10 px-1 text-[0.75rem] text-(--ui-accent)", children: t }, t))
+                /* @__PURE__ */ jsx5("span", { className: "shrink-0 text-[0.75rem] text-(--ui-text-tertiary)", children: partitionMeta(r.key).label }),
+                /* @__PURE__ */ jsx5("span", { className: "min-w-0 flex-1 truncate font-medium text-(--ui-text-primary)", children: r.title }),
+                r.tags.slice(0, 2).map((t) => /* @__PURE__ */ jsx5("span", { className: "shrink-0 rounded bg-(--ui-accent)/10 px-1 text-[0.75rem] text-(--ui-accent)", children: t }, t))
               ]
             },
             `${r.dir}:${r.file}`
           )) })
         ] }),
-        tagFilter && /* @__PURE__ */ jsxs4(
+        tagFilter && /* @__PURE__ */ jsxs5(
           "button",
           {
             type: "button",
@@ -2319,11 +2844,11 @@ function WorkbenchBoardPage() {
             children: [
               "#",
               tagFilter,
-              /* @__PURE__ */ jsx4(Codicon3, { name: "close", size: "0.6rem" })
+              /* @__PURE__ */ jsx5(Codicon4, { name: "close", size: "0.6rem" })
             ]
           }
         ),
-        /* @__PURE__ */ jsx4(
+        /* @__PURE__ */ jsx5(
           Input,
           {
             className: "h-7 w-44 text-[0.8125rem]",
@@ -2332,7 +2857,7 @@ function WorkbenchBoardPage() {
             onChange: (e) => $filterText.set(e.target.value)
           }
         ),
-        /* @__PURE__ */ jsx4(
+        /* @__PURE__ */ jsx5(
           Button2,
           {
             size: "sm",
@@ -2341,15 +2866,15 @@ function WorkbenchBoardPage() {
             children: showArchived ? "隐藏已归档" : "显示已归档"
           }
         ),
-        /* @__PURE__ */ jsx4("div", { className: "flex items-center rounded-md border border-(--ui-stroke-secondary) p-0.5", children: [
+        /* @__PURE__ */ jsx5("div", { className: "flex items-center rounded-md border border-(--ui-stroke-secondary) p-0.5", children: [
           ["all", "全部"],
           ["today", "今天到期"],
           ["overdue", "已超期"]
-        ].map(([key, label]) => /* @__PURE__ */ jsx4(
+        ].map(([key, label]) => /* @__PURE__ */ jsx5(
           "button",
           {
             type: "button",
-            className: cn3(
+            className: cn4(
               "rounded px-2 py-0.5 text-[0.75rem] transition-colors",
               dueFilter === key ? "bg-(--ui-accent) text-white" : "text-(--ui-text-tertiary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-text-primary)"
             ),
@@ -2358,8 +2883,8 @@ function WorkbenchBoardPage() {
           },
           key
         )) }),
-        /* @__PURE__ */ jsxs4("div", { className: "relative", "data-wb-health": true, children: [
-          /* @__PURE__ */ jsxs4(
+        /* @__PURE__ */ jsxs5("div", { className: "relative", "data-wb-health": true, children: [
+          /* @__PURE__ */ jsxs5(
             "button",
             {
               type: "button",
@@ -2368,61 +2893,61 @@ function WorkbenchBoardPage() {
               "aria-expanded": showHealthDetails,
               title: "查看链路健康详情",
               children: [
-                /* @__PURE__ */ jsx4("span", { className: `size-2 rounded-full ${healthTone}` }),
-                /* @__PURE__ */ jsx4("span", { children: healthLabel }),
-                /* @__PURE__ */ jsx4(Codicon3, { name: showHealthDetails ? "chevron-up" : "chevron-down", size: "0.65rem" })
+                /* @__PURE__ */ jsx5("span", { className: `size-2 rounded-full ${healthDot}` }),
+                /* @__PURE__ */ jsx5("span", { children: healthLabel }),
+                /* @__PURE__ */ jsx5(Codicon4, { name: showHealthDetails ? "chevron-up" : "chevron-down", size: "0.65rem" })
               ]
             }
           ),
-          showHealthDetails && healthData && /* @__PURE__ */ jsxs4("div", { className: "wb-health-popover absolute right-0 top-full z-30 mt-1 w-72 rounded-md p-2 text-(--ui-text-primary)", children: [
-            /* @__PURE__ */ jsxs4("div", { className: "mb-1.5 flex items-center justify-between text-[0.75rem] font-semibold text-(--ui-text-primary)", children: [
-              /* @__PURE__ */ jsx4("span", { children: "链路健康详情" }),
-              /* @__PURE__ */ jsx4("span", { className: "font-normal text-(--ui-text-quaternary)", children: healthData.ts })
+          showHealthDetails && healthData && /* @__PURE__ */ jsxs5("div", { className: "wb-health-popover absolute right-0 top-full z-30 mt-1 w-72 rounded-md p-2 text-(--ui-text-primary)", children: [
+            /* @__PURE__ */ jsxs5("div", { className: "mb-1.5 flex items-center justify-between text-[0.75rem] font-semibold text-(--ui-text-primary)", children: [
+              /* @__PURE__ */ jsx5("span", { children: "链路健康详情" }),
+              /* @__PURE__ */ jsx5("span", { className: "font-normal text-(--ui-text-quaternary)", children: healthData.ts })
             ] }),
-            /* @__PURE__ */ jsx4("div", { className: "space-y-1", children: healthData.checks.map((check) => /* @__PURE__ */ jsxs4("div", { className: "flex items-start gap-2 rounded px-1.5 py-1 hover:bg-(--ui-bg-quaternary)", children: [
-              /* @__PURE__ */ jsx4("span", { className: `mt-1 size-2 shrink-0 rounded-full ${checkTone(check.status)}` }),
-              /* @__PURE__ */ jsxs4("div", { className: "min-w-0 flex-1", children: [
-                /* @__PURE__ */ jsx4("div", { className: "text-[0.75rem] text-(--ui-text-primary)", children: check.label }),
-                /* @__PURE__ */ jsx4("div", { className: "text-[0.6875rem] text-(--ui-text-tertiary)", children: check.detail })
+            /* @__PURE__ */ jsx5("div", { className: "space-y-1", children: healthData.checks.map((check) => /* @__PURE__ */ jsxs5("div", { className: "flex items-start gap-2 rounded px-1.5 py-1 hover:bg-(--ui-bg-quaternary)", children: [
+              /* @__PURE__ */ jsx5("span", { className: `mt-1 size-2 shrink-0 rounded-full ${checkTone(check.status)}` }),
+              /* @__PURE__ */ jsxs5("div", { className: "min-w-0 flex-1", children: [
+                /* @__PURE__ */ jsx5("div", { className: "text-[0.75rem] text-(--ui-text-primary)", children: check.label }),
+                /* @__PURE__ */ jsx5("div", { className: "text-[0.6875rem] text-(--ui-text-tertiary)", children: check.detail })
               ] })
             ] }, check.id)) }),
-            healthData.last_updated && /* @__PURE__ */ jsxs4("div", { className: "mt-1.5 border-t border-(--ui-stroke-secondary) pt-1.5 text-[0.6875rem] text-(--ui-text-quaternary)", children: [
+            healthData.last_updated && /* @__PURE__ */ jsxs5("div", { className: "mt-1.5 border-t border-(--ui-stroke-secondary) pt-1.5 text-[0.6875rem] text-(--ui-text-quaternary)", children: [
               "最近状态更新：",
               healthData.last_updated.replace("T", " ")
             ] })
           ] })
         ] }),
-        /* @__PURE__ */ jsxs4(Button2, { size: "sm", variant: "outline", onClick: () => setShowSettings(true), title: "工作台设置", children: [
-          /* @__PURE__ */ jsx4(Codicon3, { name: "gear", size: "0.7rem" }),
-          /* @__PURE__ */ jsx4("span", { className: "ml-1", children: "设置" })
+        /* @__PURE__ */ jsxs5(Button2, { size: "sm", variant: "outline", onClick: () => setShowSettings(true), title: "工作台设置", children: [
+          /* @__PURE__ */ jsx5(Codicon4, { name: "gear", size: "0.7rem" }),
+          /* @__PURE__ */ jsx5("span", { className: "ml-1", children: "设置" })
         ] }),
-        /* @__PURE__ */ jsx4(ViewSwitcher, { mode: viewMode, onChange: setViewMode })
+        /* @__PURE__ */ jsx5(ViewSwitcher, { mode: viewMode, onChange: setViewMode })
       ] })
     ] }),
-    multiMode && /* @__PURE__ */ jsxs4("div", { className: "flex items-center gap-2 border-b border-(--ui-stroke-secondary) bg-(--ui-accent)/5 px-3 py-1.5", children: [
-      /* @__PURE__ */ jsxs4("span", { className: "text-[0.8125rem] text-(--ui-text-secondary)", children: [
+    multiMode && /* @__PURE__ */ jsxs5("div", { className: "flex items-center gap-2 border-b border-(--ui-stroke-secondary) bg-(--ui-accent)/5 px-3 py-1.5", children: [
+      /* @__PURE__ */ jsxs5("span", { className: "text-[0.8125rem] text-(--ui-text-secondary)", children: [
         "已选 ",
         selected.size,
         " 项"
       ] }),
-      /* @__PURE__ */ jsx4(Button2, { size: "sm", variant: "outline", disabled: batchBusy || selected.size === 0, onClick: () => runBatch("complete"), children: "批量归档" }),
-      /* @__PURE__ */ jsx4(Button2, { size: "sm", variant: "outline", disabled: batchBusy || selected.size === 0, onClick: () => runBatch("resolve"), children: "批量归档" }),
-      /* @__PURE__ */ jsx4(Button2, { size: "sm", variant: "outline", disabled: batchBusy || selected.size === 0, onClick: () => runBatch("trash"), children: "批量删除" }),
-      /* @__PURE__ */ jsx4(Button2, { size: "sm", variant: "outline", onClick: () => {
+      /* @__PURE__ */ jsx5(Button2, { size: "sm", variant: "outline", disabled: batchBusy || selected.size === 0, onClick: () => runBatch("complete"), children: "批量归档" }),
+      /* @__PURE__ */ jsx5(Button2, { size: "sm", variant: "outline", disabled: batchBusy || selected.size === 0, onClick: () => runBatch("resolve"), children: "批量归档" }),
+      /* @__PURE__ */ jsx5(Button2, { size: "sm", variant: "outline", disabled: batchBusy || selected.size === 0, onClick: () => runBatch("trash"), children: "批量删除" }),
+      /* @__PURE__ */ jsx5(Button2, { size: "sm", variant: "outline", onClick: () => {
         setSelected(/* @__PURE__ */ new Set());
         setMultiMode(false);
       }, children: "取消" })
     ] }),
-    showConversations ? /* @__PURE__ */ jsx4(
+    showConversations ? /* @__PURE__ */ jsx5(
       ConversationIndexView,
       {
         items: conversations.data?.items ?? [],
         loading: conversations.isLoading,
         error: conversations.error
       }
-    ) : showToday ? /* @__PURE__ */ jsx4(TodayView, { board, onPreview: setPreviewCard, onGoBoard: () => setShowToday(false) }) : /* @__PURE__ */ jsxs4(Fragment3, { children: [
-      viewMode === "table" && /* @__PURE__ */ jsx4(TableBoardView, { board, onPreview: setPreviewCard }),
-      viewMode === "board" && /* @__PURE__ */ jsx4("div", { className: "flex flex-1 gap-3 overflow-x-auto p-3", children: board.sections.map((section) => /* @__PURE__ */ jsx4(
+    ) : !showLegacy ? /* @__PURE__ */ jsx5(HomeView, { board, onPreview: setPreviewCard, onOpenLegacy: () => setShowLegacy(true) }) : /* @__PURE__ */ jsxs5(Fragment4, { children: [
+      viewMode === "table" && /* @__PURE__ */ jsx5(TableBoardView, { board, onPreview: setPreviewCard }),
+      viewMode === "board" && /* @__PURE__ */ jsx5("div", { className: "flex flex-1 gap-3 overflow-x-auto p-3", children: board.sections.map((section) => /* @__PURE__ */ jsx5(
         WbSectionView,
         {
           section,
@@ -2434,16 +2959,16 @@ function WorkbenchBoardPage() {
           onToggleSelect: toggleSelect,
           conversationPlatformsByTask,
           onOpenConversations: () => {
-            setShowToday(false);
+            setShowLegacy(false);
             setShowConversations(true);
           }
         },
         section.key
       )) })
     ] }),
-    previewCard && /* @__PURE__ */ jsx4(WbPreviewDrawer, { card: previewCard, onClose: () => setPreviewCard(null) }),
-    showNewTask && /* @__PURE__ */ jsx4(NewTaskDialog, { board, onClose: () => setShowNewTask(false) }),
-    showSettings && /* @__PURE__ */ jsx4(SettingsDialog, { onClose: () => setShowSettings(false) })
+    previewCard && /* @__PURE__ */ jsx5(WbPreviewDrawer, { card: previewCard, onClose: () => setPreviewCard(null) }),
+    showNewTask && /* @__PURE__ */ jsx5(NewTaskDialog, { board, onClose: () => setShowNewTask(false) }),
+    showSettings && /* @__PURE__ */ jsx5(SettingsDialog, { onClose: () => setShowSettings(false) })
   ] });
 }
 var PARTITION_TYPE_OPTIONS = [
@@ -2460,27 +2985,27 @@ var SCHEDULE_ROWS = [
 ];
 function SettingsDialog({ onClose }) {
   const field = "w-full rounded border border-(--ui-stroke-secondary) bg-(--ui-bg) px-2 py-1 text-[0.75rem] text-(--ui-text-primary) outline-none focus:border-(--ui-accent)";
-  const { data, isLoading, error } = useQuery2({
+  const { data, isLoading, error } = useQuery3({
     queryKey: ["workbench", "settings"],
     queryFn: () => fetchSettings()
   });
-  const [form, setForm] = useState3(null);
-  const [busy, setBusy] = useState3(false);
-  const [newName, setNewName] = useState3("");
-  const [newType, setNewType] = useState3("thought");
-  const [restartHint, setRestartHint] = useState3([]);
-  const [errMsg, setErrMsg] = useState3("");
-  useEffect2(() => {
+  const [form, setForm] = useState4(null);
+  const [busy, setBusy] = useState4(false);
+  const [newName, setNewName] = useState4("");
+  const [newType, setNewType] = useState4("thought");
+  const [restartHint, setRestartHint] = useState4([]);
+  const [errMsg, setErrMsg] = useState4("");
+  useEffect3(() => {
     if (data?.ok && data.config) {
       setForm(JSON.parse(JSON.stringify(data.config)));
     }
   }, [data]);
   if (!form) {
-    return /* @__PURE__ */ jsx4(Dialog, { open: true, onOpenChange: (o) => {
+    return /* @__PURE__ */ jsx5(Dialog, { open: true, onOpenChange: (o) => {
       if (!o) onClose();
-    }, children: /* @__PURE__ */ jsxs4(DialogContent, { className: "wb-dialog", style: { width: "min(52rem, 94vw)", maxWidth: "94vw" }, children: [
-      /* @__PURE__ */ jsx4(DialogHeader, { children: /* @__PURE__ */ jsx4(DialogTitle, { children: "⚙ 工作台设置" }) }),
-      /* @__PURE__ */ jsx4("div", { className: "flex items-center justify-center py-10 text-sm text-(--ui-text-tertiary)", children: isLoading ? "加载中…" : error ? "设置加载失败" : "" })
+    }, children: /* @__PURE__ */ jsxs5(DialogContent, { className: "wb-dialog", style: { width: "min(52rem, 94vw)", maxWidth: "94vw" }, children: [
+      /* @__PURE__ */ jsx5(DialogHeader, { children: /* @__PURE__ */ jsx5(DialogTitle, { children: "⚙ 工作台设置" }) }),
+      /* @__PURE__ */ jsx5("div", { className: "flex items-center justify-center py-10 text-sm text-(--ui-text-tertiary)", children: isLoading ? "加载中…" : error ? "设置加载失败" : "" })
     ] }) });
   }
   const set = (k, v) => setForm((f) => f ? { ...f, [k]: v } : f);
@@ -2510,7 +3035,7 @@ function SettingsDialog({ onClose }) {
         return;
       }
       invalidateBoard();
-      host3.notify({ kind: "success", message: "设置已保存" });
+      host4.notify({ kind: "success", message: "设置已保存" });
       if (res.restart_required?.length) {
         setRestartHint(res.restart_required);
       } else {
@@ -2522,60 +3047,60 @@ function SettingsDialog({ onClose }) {
       setBusy(false);
     }
   };
-  return /* @__PURE__ */ jsx4(Dialog, { open: true, onOpenChange: (o) => {
+  return /* @__PURE__ */ jsx5(Dialog, { open: true, onOpenChange: (o) => {
     if (!o) onClose();
-  }, children: /* @__PURE__ */ jsxs4(DialogContent, { className: "wb-dialog", style: { width: "min(52rem, 94vw)", maxWidth: "94vw" }, children: [
-    /* @__PURE__ */ jsx4(DialogHeader, { children: /* @__PURE__ */ jsx4(DialogTitle, { children: "⚙ 工作台设置" }) }),
-    /* @__PURE__ */ jsxs4("div", { className: "flex max-h-[70vh] flex-col gap-4 overflow-y-auto pr-1 text-[0.8125rem]", children: [
-      /* @__PURE__ */ jsxs4("section", { children: [
-        /* @__PURE__ */ jsxs4("div", { className: "mb-1 flex items-center gap-2", children: [
-          /* @__PURE__ */ jsx4("h3", { className: "text-[0.8125rem] font-semibold text-(--ui-text-primary)", children: "路径" }),
-          /* @__PURE__ */ jsx4("span", { className: "rounded bg-(--ui-accent)/10 px-1.5 text-[0.6875rem] text-(--ui-accent)", children: "重启后生效" })
+  }, children: /* @__PURE__ */ jsxs5(DialogContent, { className: "wb-dialog", style: { width: "min(52rem, 94vw)", maxWidth: "94vw" }, children: [
+    /* @__PURE__ */ jsx5(DialogHeader, { children: /* @__PURE__ */ jsx5(DialogTitle, { children: "⚙ 工作台设置" }) }),
+    /* @__PURE__ */ jsxs5("div", { className: "flex max-h-[70vh] flex-col gap-4 overflow-y-auto pr-1 text-[0.8125rem]", children: [
+      /* @__PURE__ */ jsxs5("section", { children: [
+        /* @__PURE__ */ jsxs5("div", { className: "mb-1 flex items-center gap-2", children: [
+          /* @__PURE__ */ jsx5("h3", { className: "text-[0.8125rem] font-semibold text-(--ui-text-primary)", children: "路径" }),
+          /* @__PURE__ */ jsx5("span", { className: "rounded bg-(--ui-accent)/10 px-1.5 text-[0.6875rem] text-(--ui-accent)", children: "重启后生效" })
         ] }),
-        /* @__PURE__ */ jsxs4("label", { className: "flex flex-col gap-1 text-(--ui-text-secondary)", children: [
+        /* @__PURE__ */ jsxs5("label", { className: "flex flex-col gap-1 text-(--ui-text-secondary)", children: [
           "工作台文件夹",
-          /* @__PURE__ */ jsx4("input", { className: field, value: form.root, onChange: (e) => set("root", e.target.value), placeholder: "~/Workbench" })
+          /* @__PURE__ */ jsx5("input", { className: field, value: form.root, onChange: (e) => set("root", e.target.value), placeholder: "~/Workbench" })
         ] }),
-        /* @__PURE__ */ jsxs4("label", { className: "mt-2 flex flex-col gap-1 text-(--ui-text-secondary)", children: [
+        /* @__PURE__ */ jsxs5("label", { className: "mt-2 flex flex-col gap-1 text-(--ui-text-secondary)", children: [
           "Obsidian 知识库（日报工作日志位置）",
-          /* @__PURE__ */ jsx4("input", { className: field, value: form.vault, onChange: (e) => set("vault", e.target.value), placeholder: "Obsidian 库路径（可留空）" })
+          /* @__PURE__ */ jsx5("input", { className: field, value: form.vault, onChange: (e) => set("vault", e.target.value), placeholder: "Obsidian 库路径（可留空）" })
         ] })
       ] }),
-      /* @__PURE__ */ jsxs4("section", { children: [
-        /* @__PURE__ */ jsxs4("div", { className: "mb-1 flex items-center gap-2", children: [
-          /* @__PURE__ */ jsx4("h3", { className: "text-[0.8125rem] font-semibold text-(--ui-text-primary)", children: "分区" }),
-          /* @__PURE__ */ jsx4("span", { className: "rounded bg-(--ui-accent)/10 px-1.5 text-[0.6875rem] text-(--ui-accent)", children: "新增即时生效" }),
-          /* @__PURE__ */ jsx4("span", { className: "text-[0.6875rem] text-(--ui-text-quaternary)", children: "删除仅限空分区" })
+      /* @__PURE__ */ jsxs5("section", { children: [
+        /* @__PURE__ */ jsxs5("div", { className: "mb-1 flex items-center gap-2", children: [
+          /* @__PURE__ */ jsx5("h3", { className: "text-[0.8125rem] font-semibold text-(--ui-text-primary)", children: "分区" }),
+          /* @__PURE__ */ jsx5("span", { className: "rounded bg-(--ui-accent)/10 px-1.5 text-[0.6875rem] text-(--ui-accent)", children: "新增即时生效" }),
+          /* @__PURE__ */ jsx5("span", { className: "text-[0.6875rem] text-(--ui-text-quaternary)", children: "删除仅限空分区" })
         ] }),
-        /* @__PURE__ */ jsx4("div", { className: "flex flex-col gap-1", children: form.partitions.map((p) => /* @__PURE__ */ jsxs4("div", { className: "flex items-center gap-2 rounded border border-(--ui-stroke-secondary) px-2 py-1", children: [
-          /* @__PURE__ */ jsx4(Codicon3, { name: partitionMeta(p.type).codicon, size: "0.8rem" }),
-          /* @__PURE__ */ jsx4("span", { className: "min-w-0 flex-1 truncate font-medium text-(--ui-text-primary)", children: p.name }),
-          /* @__PURE__ */ jsx4("span", { className: "text-[0.6875rem] text-(--ui-text-quaternary)", children: partitionMeta(p.type).label }),
-          p.fixed ? /* @__PURE__ */ jsx4("span", { className: "text-[0.6875rem] text-(--ui-text-quaternary)", children: "固定" }) : /* @__PURE__ */ jsx4(
+        /* @__PURE__ */ jsx5("div", { className: "flex flex-col gap-1", children: form.partitions.map((p) => /* @__PURE__ */ jsxs5("div", { className: "flex items-center gap-2 rounded border border-(--ui-stroke-secondary) px-2 py-1", children: [
+          /* @__PURE__ */ jsx5(Codicon4, { name: partitionMeta(p.type).codicon, size: "0.8rem" }),
+          /* @__PURE__ */ jsx5("span", { className: "min-w-0 flex-1 truncate font-medium text-(--ui-text-primary)", children: p.name }),
+          /* @__PURE__ */ jsx5("span", { className: "text-[0.6875rem] text-(--ui-text-quaternary)", children: partitionMeta(p.type).label }),
+          p.fixed ? /* @__PURE__ */ jsx5("span", { className: "text-[0.6875rem] text-(--ui-text-quaternary)", children: "固定" }) : /* @__PURE__ */ jsx5(
             "button",
             {
               type: "button",
               disabled: p.count > 0,
               title: p.count > 0 ? `非空（${p.count} 个文件）不能删除` : "删除分区",
-              className: "text-(--ui-text-tertiary) hover:text-(--ui-text-danger) disabled:cursor-not-allowed disabled:opacity-40",
+              className: "text-(--ui-text-tertiary) hover:text-(--ui-red) disabled:cursor-not-allowed disabled:opacity-40",
               onClick: () => removePartition(p.name),
-              children: /* @__PURE__ */ jsx4(Codicon3, { name: "trash", size: "0.8rem" })
+              children: /* @__PURE__ */ jsx5(Codicon4, { name: "trash", size: "0.8rem" })
             }
           )
         ] }, p.name)) }),
-        /* @__PURE__ */ jsxs4("div", { className: "mt-2 flex items-center gap-2", children: [
-          /* @__PURE__ */ jsx4("input", { className: field + " flex-1", value: newName, onChange: (e) => setNewName(e.target.value), placeholder: "新分区名（≤20 字）" }),
-          /* @__PURE__ */ jsx4(DialogSelect, { value: newType, onChange: setNewType, options: PARTITION_TYPE_OPTIONS }),
-          /* @__PURE__ */ jsx4(Button2, { size: "sm", variant: "outline", onClick: addPartition, children: "＋ 添加" })
+        /* @__PURE__ */ jsxs5("div", { className: "mt-2 flex items-center gap-2", children: [
+          /* @__PURE__ */ jsx5("input", { className: field + " flex-1", value: newName, onChange: (e) => setNewName(e.target.value), placeholder: "新分区名（≤20 字）" }),
+          /* @__PURE__ */ jsx5(DialogSelect, { value: newType, onChange: setNewType, options: PARTITION_TYPE_OPTIONS }),
+          /* @__PURE__ */ jsx5(Button2, { size: "sm", variant: "outline", onClick: addPartition, children: "＋ 添加" })
         ] })
       ] }),
-      /* @__PURE__ */ jsxs4("section", { children: [
-        /* @__PURE__ */ jsxs4("div", { className: "mb-1 flex items-center gap-2", children: [
-          /* @__PURE__ */ jsx4("h3", { className: "text-[0.8125rem] font-semibold text-(--ui-text-primary)", children: "定时任务" }),
-          /* @__PURE__ */ jsx4("span", { className: "rounded bg-(--ui-accent)/10 px-1.5 text-[0.6875rem] text-(--ui-accent)", children: "立即生效" })
+      /* @__PURE__ */ jsxs5("section", { children: [
+        /* @__PURE__ */ jsxs5("div", { className: "mb-1 flex items-center gap-2", children: [
+          /* @__PURE__ */ jsx5("h3", { className: "text-[0.8125rem] font-semibold text-(--ui-text-primary)", children: "定时任务" }),
+          /* @__PURE__ */ jsx5("span", { className: "rounded bg-(--ui-accent)/10 px-1.5 text-[0.6875rem] text-(--ui-accent)", children: "立即生效" })
         ] }),
-        /* @__PURE__ */ jsx4("div", { className: "flex flex-col gap-1.5", children: SCHEDULE_ROWS.map((row) => /* @__PURE__ */ jsxs4("div", { className: "flex items-center gap-2", children: [
-          /* @__PURE__ */ jsx4(
+        /* @__PURE__ */ jsx5("div", { className: "flex flex-col gap-1.5", children: SCHEDULE_ROWS.map((row) => /* @__PURE__ */ jsxs5("div", { className: "flex items-center gap-2", children: [
+          /* @__PURE__ */ jsx5(
             "input",
             {
               type: "checkbox",
@@ -2584,8 +3109,8 @@ function SettingsDialog({ onClose }) {
               onChange: (e) => setScheduler(row.key, { enabled: e.target.checked })
             }
           ),
-          /* @__PURE__ */ jsx4("span", { className: "w-24 shrink-0 text-(--ui-text-primary)", children: row.label }),
-          row.key !== "lifecycle" ? /* @__PURE__ */ jsx4(
+          /* @__PURE__ */ jsx5("span", { className: "w-24 shrink-0 text-(--ui-text-primary)", children: row.label }),
+          row.key !== "lifecycle" ? /* @__PURE__ */ jsx5(
             "input",
             {
               className: field + " w-24",
@@ -2593,31 +3118,31 @@ function SettingsDialog({ onClose }) {
               value: form.scheduler[row.key]?.time ?? "20:00",
               onChange: (e) => setScheduler(row.key, { time: e.target.value })
             }
-          ) : /* @__PURE__ */ jsx4("span", { className: "w-24 text-[0.6875rem] text-(--ui-text-quaternary)", children: "每 10 分钟" }),
-          /* @__PURE__ */ jsx4("span", { className: "min-w-0 truncate text-[0.6875rem] text-(--ui-text-quaternary)", children: row.note })
+          ) : /* @__PURE__ */ jsx5("span", { className: "w-24 text-[0.6875rem] text-(--ui-text-quaternary)", children: "每 10 分钟" }),
+          /* @__PURE__ */ jsx5("span", { className: "min-w-0 truncate text-[0.6875rem] text-(--ui-text-quaternary)", children: row.note })
         ] }, row.key)) }),
-        /* @__PURE__ */ jsxs4("label", { className: "mt-2 flex items-center gap-2 text-(--ui-text-secondary)", children: [
-          /* @__PURE__ */ jsx4("input", { type: "checkbox", className: "size-3.5", checked: form.write_worklog, onChange: (e) => set("write_worklog", e.target.checked) }),
+        /* @__PURE__ */ jsxs5("label", { className: "mt-2 flex items-center gap-2 text-(--ui-text-secondary)", children: [
+          /* @__PURE__ */ jsx5("input", { type: "checkbox", className: "size-3.5", checked: form.write_worklog, onChange: (e) => set("write_worklog", e.target.checked) }),
           "日报写入 Obsidian 工作日志"
         ] })
       ] }),
-      /* @__PURE__ */ jsxs4("section", { children: [
-        /* @__PURE__ */ jsxs4("div", { className: "mb-1 flex items-center gap-2", children: [
-          /* @__PURE__ */ jsx4("h3", { className: "text-[0.8125rem] font-semibold text-(--ui-text-primary)", children: "QQ 投递" }),
-          /* @__PURE__ */ jsx4("span", { className: "rounded bg-(--ui-accent)/10 px-1.5 text-[0.6875rem] text-(--ui-accent)", children: "立即生效" })
+      /* @__PURE__ */ jsxs5("section", { children: [
+        /* @__PURE__ */ jsxs5("div", { className: "mb-1 flex items-center gap-2", children: [
+          /* @__PURE__ */ jsx5("h3", { className: "text-[0.8125rem] font-semibold text-(--ui-text-primary)", children: "QQ 投递" }),
+          /* @__PURE__ */ jsx5("span", { className: "rounded bg-(--ui-accent)/10 px-1.5 text-[0.6875rem] text-(--ui-accent)", children: "立即生效" })
         ] }),
-        /* @__PURE__ */ jsxs4("label", { className: "flex flex-col gap-1 text-(--ui-text-secondary)", children: [
+        /* @__PURE__ */ jsxs5("label", { className: "flex flex-col gap-1 text-(--ui-text-secondary)", children: [
           "投递目标（qqbot:群 openid）",
-          /* @__PURE__ */ jsx4("input", { className: field, value: form.deliver_target, onChange: (e) => set("deliver_target", e.target.value), placeholder: "qqbot:..." })
+          /* @__PURE__ */ jsx5("input", { className: field, value: form.deliver_target, onChange: (e) => set("deliver_target", e.target.value), placeholder: "qqbot:..." })
         ] })
       ] }),
-      /* @__PURE__ */ jsxs4("section", { children: [
-        /* @__PURE__ */ jsxs4("div", { className: "mb-1 flex items-center gap-2", children: [
-          /* @__PURE__ */ jsx4("h3", { className: "text-[0.8125rem] font-semibold text-(--ui-text-primary)", children: "回收站保留" }),
-          /* @__PURE__ */ jsx4("span", { className: "rounded bg-(--ui-accent)/10 px-1.5 text-[0.6875rem] text-(--ui-accent)", children: "下次维护生效" })
+      /* @__PURE__ */ jsxs5("section", { children: [
+        /* @__PURE__ */ jsxs5("div", { className: "mb-1 flex items-center gap-2", children: [
+          /* @__PURE__ */ jsx5("h3", { className: "text-[0.8125rem] font-semibold text-(--ui-text-primary)", children: "回收站保留" }),
+          /* @__PURE__ */ jsx5("span", { className: "rounded bg-(--ui-accent)/10 px-1.5 text-[0.6875rem] text-(--ui-accent)", children: "下次维护生效" })
         ] }),
-        /* @__PURE__ */ jsxs4("div", { className: "flex items-center gap-2", children: [
-          /* @__PURE__ */ jsx4(
+        /* @__PURE__ */ jsxs5("div", { className: "flex items-center gap-2", children: [
+          /* @__PURE__ */ jsx5(
             "input",
             {
               className: field + " w-24",
@@ -2628,8 +3153,8 @@ function SettingsDialog({ onClose }) {
               onChange: (e) => set("ttl", { ...form.ttl, days: Number(e.target.value) })
             }
           ),
-          /* @__PURE__ */ jsx4("span", { className: "text-(--ui-text-secondary)", children: "天" }),
-          /* @__PURE__ */ jsx4(
+          /* @__PURE__ */ jsx5("span", { className: "text-(--ui-text-secondary)", children: "天" }),
+          /* @__PURE__ */ jsx5(
             DialogSelect,
             {
               value: form.ttl.mode,
@@ -2642,16 +3167,16 @@ function SettingsDialog({ onClose }) {
           )
         ] })
       ] }),
-      errMsg && /* @__PURE__ */ jsx4("div", { className: "rounded border border-(--ui-stroke-danger) bg-(--ui-bg-elevated) px-2 py-1.5 text-[0.75rem] text-(--ui-text-danger)", children: errMsg }),
-      restartHint.length > 0 && /* @__PURE__ */ jsxs4("div", { className: "rounded border border-(--ui-accent)/30 bg-(--ui-accent)/5 px-2 py-1.5 text-[0.75rem] text-(--ui-text-secondary)", children: [
+      errMsg && /* @__PURE__ */ jsx5("div", { className: "rounded border border-(--ui-red) bg-(--ui-bg-elevated) px-2 py-1.5 text-[0.75rem] text-(--ui-red)", children: errMsg }),
+      restartHint.length > 0 && /* @__PURE__ */ jsxs5("div", { className: "rounded border border-(--ui-accent)/30 bg-(--ui-accent)/5 px-2 py-1.5 text-[0.75rem] text-(--ui-text-secondary)", children: [
         "已保存。以下设置重启 Hermes 后生效：",
         restartHint.join("、"),
         "（路径 / 分区白名单）"
       ] })
     ] }),
-    /* @__PURE__ */ jsxs4(DialogFooter, { children: [
-      /* @__PURE__ */ jsx4(Button2, { size: "sm", variant: "outline", onClick: onClose, children: "取消" }),
-      /* @__PURE__ */ jsx4(Button2, { size: "sm", onClick: save, disabled: busy, children: busy ? "保存中…" : "保存" })
+    /* @__PURE__ */ jsxs5(DialogFooter, { children: [
+      /* @__PURE__ */ jsx5(Button2, { size: "sm", variant: "outline", onClick: onClose, children: "取消" }),
+      /* @__PURE__ */ jsx5(Button2, { size: "sm", onClick: save, disabled: busy, children: busy ? "保存中…" : "保存" })
     ] })
   ] }) });
 }
@@ -2721,9 +3246,9 @@ var WB_LOCALES = {
 };
 
 // desktop-src/plugin.tsx
-import { jsx as jsx5, jsxs as jsxs5 } from "react/jsx-runtime";
+import { jsx as jsx6, jsxs as jsxs6 } from "react/jsx-runtime";
 function WbStatusCount() {
-  const { data: board } = useQuery3({
+  const { data: board } = useQuery4({
     queryFn: () => fetchBoard(),
     queryKey: BOARD_KEY,
     refetchInterval: 3e4
@@ -2731,18 +3256,18 @@ function WbStatusCount() {
   if (!board || board.totals.pending === 0) {
     return null;
   }
-  return /* @__PURE__ */ jsx5(Tip2, { label: `${board.totals.pending} pending / ${board.totals.total} total`, children: /* @__PURE__ */ jsxs5(
+  return /* @__PURE__ */ jsx6(Tip2, { label: `${board.totals.pending} pending / ${board.totals.total} total`, children: /* @__PURE__ */ jsxs6(
     "button",
     {
-      className: cn4(
+      className: cn5(
         "inline-flex h-full items-center gap-1 rounded-none px-1.5 text-[0.6875rem] tabular-nums transition-colors",
         "text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
       ),
-      onClick: () => host4.navigate("/workbench"),
+      onClick: () => host5.navigate("/workbench"),
       type: "button",
       children: [
-        /* @__PURE__ */ jsx5(Codicon4, { name: "checklist", size: "0.7rem" }),
-        /* @__PURE__ */ jsx5("span", { children: board.totals.pending })
+        /* @__PURE__ */ jsx6(Codicon5, { name: "checklist", size: "0.7rem" }),
+        /* @__PURE__ */ jsx6("span", { children: board.totals.pending })
       ]
     }
   ) });
@@ -2760,7 +3285,7 @@ var plugin = {
         id: "page",
         area: ROUTES_AREA,
         data: { path: "/workbench" },
-        render: () => /* @__PURE__ */ jsx5(WorkbenchBoardPage, {})
+        render: () => /* @__PURE__ */ jsx6(WorkbenchBoardPage, {})
       },
       {
         id: "nav",
@@ -2772,7 +3297,7 @@ var plugin = {
         id: "count",
         area: STATUSBAR_AREAS.right,
         order: 80,
-        render: () => /* @__PURE__ */ jsx5(WbStatusCount, {})
+        render: () => /* @__PURE__ */ jsx6(WbStatusCount, {})
       },
       {
         id: "open",
@@ -2781,7 +3306,7 @@ var plugin = {
           id: "workbench.open",
           label: "Workbench: Open board",
           keywords: ["workbench", "board", "tasks", "inbox"],
-          run: () => host4.navigate("/workbench")
+          run: () => host5.navigate("/workbench")
         }
       },
       {
@@ -2817,7 +3342,7 @@ var plugin = {
           // Note: previous binding was mod+alt+w; changed per kanban convention.
           defaults: ["mod+alt+n"],
           label: "Workbench: Open board",
-          run: () => host4.navigate("/workbench")
+          run: () => host5.navigate("/workbench")
         }
       }
     ]);

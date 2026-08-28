@@ -2,12 +2,15 @@ import { Codicon, host } from '@hermes/plugin-sdk'
 import { useEffect, useRef, useState } from 'react'
 
 import { writeWorkbenchClipboard } from './clipboard'
-import { conversationActionLabel, type WbConversationRef } from './types'
+import { conversationPrimaryAction } from './card-action'
+import type { WbConversationRef } from './types'
 
 const platformLabel = (platform: string) => ({ qq: 'QQ', weixin: '微信', messaging: '消息平台' })[platform] ?? platform
 
 function ConversationActionButton({ item }: { item: WbConversationRef }) {
-  const canOpen = item.resume_mode === 'original' && !!item.session_id
+  // Task 4（2026-08-27）：主操作统一映射——original+稳定 session_id 才直达，否则摘要续接
+  const primary = conversationPrimaryAction(item)
+  const canOpen = primary.kind === 'open_original'
   const [copyStatus, setCopyStatus] = useState<'idle' | 'copied' | 'error'>('idle')
   const resetTimer = useRef<number | null>(null)
 
@@ -31,12 +34,12 @@ function ConversationActionButton({ item }: { item: WbConversationRef }) {
   }
 
   const label = canOpen
-    ? conversationActionLabel(item)
+    ? primary.label
     : copyStatus === 'copied'
       ? '已复制'
       : copyStatus === 'error'
         ? '复制失败'
-        : conversationActionLabel(item)
+        : primary.label
 
   return <button type="button" className="rounded border border-(--ui-stroke-secondary) px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary)" onClick={() => { void handleClick() }} title={canOpen ? '跳转到 Hermes 原会话' : copyStatus === 'error' ? '剪贴板不可用，请稍后重试' : '复制续接摘要，可粘贴到任意新会话'}>{label}</button>
 }
