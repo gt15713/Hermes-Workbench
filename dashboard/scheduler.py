@@ -439,6 +439,9 @@ def _set_phase(
         js["completed_at"] = now
         state.setdefault("last_runs", {})[job_key] = attempt_key
         js.pop("last_error", None)
+        # WB-S1-023: 终态自洽 —— completed 不得残留矛盾的中断/失败时间戳
+        js.pop("interrupted_at", None)
+        js.pop("failed_at", None)
     elif phase == PHASE_FAILED:
         js["failed_at"] = now
     elif phase == PHASE_INTERRUPTED:
@@ -507,16 +510,62 @@ def _attempt_already_handled(state: dict, job_key: str, attempt_key: str) -> boo
 
 def _reconcile_stale_states() -> None:
     """进程启动时识别遗留非终态：上次进程中断留下的 scheduled/started/
-    artifact_written/delivery_sent → interrupted/stale，绝不静默视为成功。"""
+    artifact_written/delivery_sent → interrupted/stale，绝不静默视为成功。
+
+    WB-S1-023: 结算前先查 scheduler.log 证据 —— 该 attempt 若已有 ok 完成行，
+    按日志证据结算为 completed（8-28 20:07 实证：19:50/20:00 均执行成功却被
+    误标 interrupted）；无日志行或日志行非 ok 仍标 interrupted。
+    """
     state = _load_state()
     now = datetime.now().isoformat(timespec="seconds")
     changed = False
     for _job_key, js in (state.get("job_states") or {}).items():
         if js.get("phase") not in _NONTERMINAL_PHASES:
             continue
-        js["phase"] = PHASE_INTERRUPTED
-        js["interrupted_at"] = now
-        js.setdefault("last_error", "interrupted: process restarted before completion")
+        run_key = js.get("attempt_key", "")
+        run_dt = _parse_run_key(run_key)
+        settled = False
+        if run_dt is not None:
+            try:
+                lines = _LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError:
+                lines = []
+            for line in lines:
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if rec.get("job") != _job_key:
+                    continue
+                try:
+                    start = datetime.fromisoformat(rec.get("started_at", ""))
+                except (ValueError, TypeError):
+                    continue
+                if start.strftime("%Y-%m-%d %H:%M") != run_dt.strftime("%Y-%m-%d %H:%M"):
+                    continue
+                if rec.get("ok"):
+                    # 日志证明该 attempt 已成功完成 → 结算为 completed
+                    js["phase"] = PHASE_COMPLETED
+                    js["completed_at"] = rec.get(
+                        "ts", start.isoformat(timespec="seconds")
+                    )
+                    state.setdefault("last_runs", {})[_job_key] = run_key
+                    js.pop("last_error", None)
+                    js.pop("interrupted_at", None)
+                else:
+                    js["phase"] = PHASE_INTERRUPTED
+                    js["interrupted_at"] = now
+                    js.setdefault(
+                        "last_error", "interrupted: log shows failed attempt"
+                    )
+                settled = True
+                break
+        if not settled:
+            js["phase"] = PHASE_INTERRUPTED
+            js["interrupted_at"] = now
+            js.setdefault(
+                "last_error", "interrupted: process restarted before completion"
+            )
         changed = True
     if changed:
         _save_state(state)
@@ -1122,24 +1171,69 @@ def _parse_structured_output(text: str, records: dict) -> dict:
             else:
                 seen_w.add(pid)
 
-    # Mandatory current-day records: today's processed/pending facts cannot be
-    # omitted — the deterministic display-limit rule already selected them
-    # before the model, so every listed processed/pending ID must be present.
+    # WB-S1-023 Mandatory records: processed/pending/week_completed are all
+    # pre-selected by the deterministic display-limit rule before the model,
+    # so every listed ID in all three collections must be present. A model
+    # returning a subset (count=5 but only 2 listed) is a factual violation.
     if isinstance(selected_processed, list) and not any(
-        i.startswith(("processed", "pending")) for i in issues
+        i.startswith(("processed", "pending", "week")) for i in issues
     ):
         missing_d = sorted(allowed_processed - set(selected_processed))
         if missing_d:
             issues.append(f"遗漏今日完成项: {missing_d}")
 
     if isinstance(selected_pending, list) and not any(
-        i.startswith(("processed", "pending")) for i in issues
+        i.startswith(("processed", "pending", "week")) for i in issues
     ):
         missing_p = sorted(allowed_pending - set(selected_pending))
         if missing_p:
             issues.append(f"遗漏今日待办: {missing_p}")
 
+    if isinstance(selected_week, list) and not any(
+        i.startswith(("processed", "pending", "week")) for i in issues
+    ):
+        missing_w = sorted(allowed_week - set(selected_week))
+        if missing_w:
+            issues.append(f"week_completed 遗漏本周完成项: {missing_w}")
+
     return {"ok": not issues, "issues": issues, "parsed": parsed if not issues else None}
+
+
+def validate_rendered_output(records: dict, parsed: dict, data: dict | None = None) -> dict:
+    """WB-S1-023 渲染后契约校验（唯一 post-render validator）。
+
+    校验渲染选择集与结构化源数据逐集合相等（不漏/不增/不改写），
+    以及计数与列表长度一致。写文件前与投递前复用同一实现。
+    Returns {"ok": bool, "issues": [str]}.
+    """
+    issues: list[str] = []
+    src = {
+        "processed": [r["id"] for r in records.get("processed", [])],
+        "pending": [r["id"] for r in records.get("pending", [])],
+        "week_completed": [r["id"] for r in records.get("week_completed", [])],
+    }
+    for key, src_ids in src.items():
+        sel = parsed.get(key)
+        if not isinstance(sel, list):
+            issues.append(f"{key} 不是数组")
+            continue
+        missing = sorted(set(src_ids) - set(sel))
+        extra = sorted(set(sel) - set(src_ids))
+        if missing:
+            issues.append(f"{key} 遗漏: {missing}")
+        if extra:
+            issues.append(f"{key} 多余: {extra}")
+        if len(sel) != len(set(sel)):
+            issues.append(f"{key} 含重复 ID")
+    # 计数一致性：源数据声明的 completed_count 必须等于通过校验的列表长度
+    week_stats = (data or {}).get("week") or {}
+    declared = week_stats.get("completed_count")
+    if declared is not None and isinstance(parsed.get("week_completed"), list):
+        if int(declared) != len(parsed["week_completed"]) and int(declared) <= 8:
+            issues.append(
+                f"计数不一致: completed_count={declared} vs 渲染列表 {len(parsed['week_completed'])}"
+            )
+    return {"ok": not issues, "issues": issues}
 
 
 def _generate_deterministic_judgement(records: dict, parsed: dict, data: dict | None = None) -> tuple[str, str]:
@@ -1155,6 +1249,7 @@ def _generate_deterministic_judgement(records: dict, parsed: dict, data: dict | 
     """
     # Counts come from collector records when present; fall back to validated
     # parsed selection only in unit-test style calls without the real data dict.
+    parsed = parsed if isinstance(parsed, dict) else {}
     data_processed = (data or {}).get("processed")
     data_pending = (data or {}).get("pending")
     week_stats = (data or {}).get("week") or {}
@@ -1205,9 +1300,8 @@ def _generate_deterministic_judgement(records: dict, parsed: dict, data: dict | 
             recommendation_parts.append(f"本周剩余 {remaining} 项待办")
     if blocked_count > 0:
         recommendation_parts.append(f"阻塞 {blocked_count} 项待解除")
-    health = (data or {}).get("link_health", {}) or {}
-    if isinstance(health, dict) and health.get("status") == "red":
-            recommendation_parts.append("链路状态需排查")
+    # WB-S1-023: 健康状态只经 _health_report_line 拼接在 QQ 消息唯一 footer，
+    # 不进入判断/建议正文（禁伪链路建议）。
 
     recommendation = "；".join(recommendation_parts) if recommendation_parts else ""
 
@@ -1216,6 +1310,7 @@ def _generate_deterministic_judgement(records: dict, parsed: dict, data: dict | 
 
 def _render_worklog(records: dict, parsed: dict, today: str, data: dict | None = None) -> str:
     """Render WORKLOG markdown from validated structured output."""
+    parsed = parsed if isinstance(parsed, dict) else {}
     title_map: dict[str, str] = {}
     for r in records.get("processed", []):
         title_map[r["id"]] = r["title"]
@@ -1272,6 +1367,7 @@ def _render_worklog(records: dict, parsed: dict, today: str, data: dict | None =
 
 def _render_qqmsg(records: dict, parsed: dict, today: str, data: dict | None = None) -> str:
     """Render QQMSG from validated structured output."""
+    parsed = parsed if isinstance(parsed, dict) else {}
     title_map: dict[str, str] = {}
     for r in records.get("processed", []):
         title_map[r["id"]] = r["title"]
@@ -1357,6 +1453,9 @@ def _job_daily_report(ctx: Any) -> dict:
     generated = "empty"
     factual = {"ok": False, "issues": ["数据未通过事实校验"]}
 
+    render_validation = {"ok": False, "issues": ["未执行渲染"]}
+    render_fallback = None
+
     if data_validated and data:
         records = _build_daily_records(data)
         prompt = _DAILY_STRUCTURED_PROMPT.format(records_json=json.dumps(records, ensure_ascii=False))
@@ -1366,17 +1465,26 @@ def _job_daily_report(ctx: Any) -> dict:
         if model_raw:
             parsed = _parse_structured_output(model_raw, records)
             if parsed["ok"]:
-                generated = "ok"
-                factual = {"ok": True, "issues": []}
-                wl = _render_worklog(records, parsed["parsed"], data["today"], data)
-                qq = _render_qqmsg(records, parsed["parsed"], data["today"], data)
-                text = f"<WORKLOG>\n{wl}\n</WORKLOG>\n<QQMSG>\n{qq}\n</QQMSG>"
+                # WB-S1-023 渲染后契约：解析通过仍需渲染选择集与源数据逐集合相等
+                render_validation = validate_rendered_output(records, parsed["parsed"], data)
+                if render_validation["ok"]:
+                    generated = "ok"
+                    factual = {"ok": True, "issues": []}
+                    wl = _render_worklog(records, parsed["parsed"], data["today"], data)
+                    qq = _render_qqmsg(records, parsed["parsed"], data["today"], data)
+                    text = f"<WORKLOG>\n{wl}\n</WORKLOG>\n<QQMSG>\n{qq}\n</QQMSG>"
+                else:
+                    generated = "render-invalid"
+                    factual = {"ok": False, "issues": render_validation["issues"]}
             else:
                 generated = "invalid"
+                render_validation = {"ok": False, "issues": parsed["issues"]}
                 factual = {"ok": False, "issues": parsed["issues"]}
 
     if not text or not factual["ok"]:
-        # 无效/缺失生成 → 确定性回退（事实无效内容绝不因生成成功而发送）
+        # WB-S1-023 fail-closed：渲染不合格 → 确定性回退（不再次调用模型），
+        # 记录 render_fallback=deterministic + 失败原因，事实无效内容绝不投递
+        render_fallback = "deterministic"
         text = _deterministic_daily_text()
         text = _split_output(text).get("qq") or text
         if not text:
@@ -1384,11 +1492,17 @@ def _job_daily_report(ctx: Any) -> dict:
                 "generated": generated or "empty",
                 "data_validated": data_validated,
                 "factual_validation": factual,
+                "render_validation": render_validation,
+                "render_fallback": render_fallback,
                 "worklog": "skipped-empty",
                 "delivery": "skipped-empty",
             }
-        generated = "fallback-invalid" if generated == "invalid" else "fallback"
-        factual = {"ok": True, "issues": [], "note": "deterministic fallback"}
+        generated = "fallback-invalid" if generated in ("invalid", "render-invalid") else "fallback"
+        factual = {"ok": True, "issues": [], "note": "deterministic fallback",
+                   "render_issues": render_validation["issues"]}
+        # render_validation 保留原始失败证据（ok=False + issues），不冒充合格
+        render_validation = {"ok": False, "issues": render_validation.get("issues", []),
+                             "note": "deterministic fallback (render validation failed)"}
 
     parts = _split_output(text)
     worklog = (
@@ -1403,14 +1517,18 @@ def _job_daily_report(ctx: Any) -> dict:
     delivery = _deliver(qq_message)
     if delivery == "failed" and qq_message:
         _queue_delivery(qq_message)
-    return {
+    result = {
         "generated": generated,
         "data_validated": data_validated,
         "factual_validation": {**data_facts, **factual} if isinstance(data_facts, dict) else factual,
+        "render_validation": render_validation,
         "worklog": worklog,
         "delivery": delivery,
         "queued_retry": delivery == "failed" and bool(qq_message),
     }
+    if render_fallback:
+        result["render_fallback"] = render_fallback
+    return result
 
 def _job_nudge(ctx: Any) -> dict:
     """超期任务提醒（12:15）：数据 → LLM → QQ；无内容不发送。"""

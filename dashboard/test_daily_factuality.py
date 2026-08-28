@@ -290,7 +290,7 @@ class TestStructuredDailyOutput:
         """Valid JSON with allowed IDs renders real user-facing sections."""
         records = self._records()
         # Today's processed/pending are mandatory: both D1,D2 and P1,P2 present.
-        text = '{"processed": ["D1", "D2"], "pending": ["P1", "P2"], "week_completed": ["W1"]}'
+        text = '{"processed": ["D1", "D2"], "pending": ["P1", "P2"], "week_completed": ["W1", "W2"]}'
         parsed = scheduler._parse_structured_output(text, records)
         assert parsed["ok"] is True, parsed["issues"]
         wl = scheduler._render_worklog(records, parsed["parsed"], "2026-08-26")
@@ -303,7 +303,8 @@ class TestStructuredDailyOutput:
         assert "✅ 今日推进" in qq and "推进视频分类" in qq
         assert "⏳ 待处理" in qq and "推进视频分类" in qq.split("⏳")[1]
         assert "📊 本周完成" in qq and "周完成项A" in qq
-        assert "周完成项B" not in qq  # model selected only W1; W2 must not leak in
+        # WB-S1-023: week_completed is mandatory-complete; both titles must appear
+        assert "周完成项B" in qq
 
     def test_2_unknown_duplicate_wrong_category_ids_fallback(self):
         """Unknown/duplicate/wrong-category IDs are rejected."""
@@ -334,6 +335,7 @@ class TestStructuredDailyOutput:
         records = self._records(
             processed=[{"id": "D1", "title": "原生家庭受过伤的人，大多都会活成这三种样子。-哔哩哔哩-https-b23."}],
             pending=[],
+            week_completed=[],
         )
         text = '{"processed": ["D1"], "pending": [], "week_completed": []}'
         parsed = scheduler._parse_structured_output(text, records)
@@ -386,7 +388,7 @@ class TestStructuredDailyOutput:
     def test_6_worklog_qqmsg_separate_no_boilerplate(self):
         """WORKLOG and QQMSG are separate, contain no Cron/job/system boilerplate."""
         records = self._records()
-        text = '{"processed": ["D1", "D2"], "pending": ["P1", "P2"], "week_completed": []}'
+        text = '{"processed": ["D1", "D2"], "pending": ["P1", "P2"], "week_completed": ["W1", "W2"]}'
         parsed = scheduler._parse_structured_output(text, records)
         wl = scheduler._render_worklog(records, parsed["parsed"], "2026-08-26")
         qq = scheduler._render_qqmsg(records, parsed["parsed"], "2026-08-26")
@@ -471,9 +473,9 @@ class TestStructuredDailyOutput:
         assert r1["ok"] is False
         assert any("遗漏今日完成项" in i for i in r1["issues"])
         assert any("遗漏今日待办" in i for i in r1["issues"])
-        # Complete selection passes.
+        # Complete selection passes (week_completed also mandatory-complete).
         r2 = scheduler._parse_structured_output(
-            '{"processed": ["D1", "D2"], "pending": ["P1", "P2"], "week_completed": []}', records)
+            '{"processed": ["D1", "D2"], "pending": ["P1", "P2"], "week_completed": ["W1", "W2"]}', records)
         assert r2["ok"] is True, r2["issues"]
 
     def test_11_deterministic_judgement_has_direct_source_fields(self):
@@ -484,6 +486,7 @@ class TestStructuredDailyOutput:
                 {"id": "P1", "title": "推进视频分类", "label": "待回看", "due": ""},
                 {"id": "P2", "title": "整理决策记录", "label": "", "due": "2026-08-30"},
             ],
+            week_completed=[],
         )
         data = {
             "week": {"completed_count": 1, "remaining_count": 1, "blocked_count": 1, "new_count": 0, "due_next_week": 1},
