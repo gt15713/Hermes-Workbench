@@ -58,6 +58,31 @@ _SEND_TIMEOUT = 120         # QQ 投递子进程上限
 _DELIVERY_RETRY_MAX = 3     # 投递失败重试上限
 _DELIVERY_RETRY_MINUTES = 5  # 失败后重试间隔（分钟）
 
+# 任务生命周期阶段（WB-S1-011：last_runs 只在 completed 时更新，不把尝试当完成）
+PHASE_SCHEDULED = "scheduled"
+PHASE_STARTED = "started"
+PHASE_ARTIFACT_WRITTEN = "artifact_written"
+PHASE_DELIVERY_SENT = "delivery_sent"
+PHASE_COMPLETED = "completed"
+PHASE_FAILED = "failed"
+PHASE_INTERRUPTED = "interrupted"
+_PHASE_ORDER = (
+    PHASE_SCHEDULED,
+    PHASE_STARTED,
+    PHASE_ARTIFACT_WRITTEN,
+    PHASE_DELIVERY_SENT,
+    PHASE_COMPLETED,
+    PHASE_FAILED,
+    PHASE_INTERRUPTED,
+)
+_TERMINAL_PHASES = (PHASE_COMPLETED, PHASE_FAILED, PHASE_INTERRUPTED)
+_NONTERMINAL_PHASES = (
+    PHASE_SCHEDULED,
+    PHASE_STARTED,
+    PHASE_ARTIFACT_WRITTEN,
+    PHASE_DELIVERY_SENT,
+)
+
 
 # ---------------------------------------------------------------------------
 # cron 表达式（5 段：分 时 日 月 周；周日=0）——零依赖微型实现
@@ -259,18 +284,38 @@ def _load_state() -> dict:
     try:
         data = json.loads(_STATE_FILE.read_text(encoding="utf-8"))
         if isinstance(data, dict) and isinstance(data.get("last_runs"), dict):
+            # WB-S1-011：惰性补全 v2 字段；历史迁移见 _migrate_state_file
+            data.setdefault("job_states", {})
+            data.setdefault("schema_version", 2)
             return data
     except (OSError, ValueError, json.JSONDecodeError):
         pass
-    return {"last_runs": {}, "pending_delivery": None, "errors": {"count": 0, "last": None}, "updated_at": None}
+    return {
+        "last_runs": {},
+        "job_states": {},
+        "pending_delivery": None,
+        "errors": {"count": 0, "last": None},
+        "updated_at": None,
+        "schema_version": 2,
+    }
 
 
 def _save_state(state: dict) -> None:
     state["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    state.setdefault("job_states", {})
+    state.setdefault("schema_version", 2)
+    # 原子写：同目录临时文件 + os.replace（Windows 上避免读者读到半写内容/文件锁）；
+    # 写失败 fail-closed：保留磁盘旧内容，不抛给调用方。
+    tmp = _STATE_FILE.with_suffix(".json.tmp")
     try:
-        _STATE_FILE.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, _STATE_FILE)
     except OSError as exc:
         _log.warning("workbench scheduler state write failed: %s", exc)
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _append_log(job_key: str, started_at: str, ok: bool, summary: Any) -> None:
@@ -354,6 +399,183 @@ def _active_errors(state: dict) -> tuple[int, dict | None]:
     ):
         return max(0, count - 1), None
     return count, last
+
+
+# ---------------------------------------------------------------------------
+# 任务生命周期状态机（WB-S1-011）
+# 契约：last_runs 只在 completed 时更新；started/artifact_written/delivery_sent
+#       均为中间态；失败/中断保留 last_error + 阶段 + 开始时间；重启识别 stale。
+# ---------------------------------------------------------------------------
+
+
+def _set_phase(
+    state: dict,
+    job_key: str,
+    phase: str,
+    attempt_key: str,
+    started_at: str | None = None,
+    last_error: str | None = None,
+) -> None:
+    """更新 job_states[job_key] 的生命周期阶段并持久化。
+
+    - 仅 completed 阶段会同步写入 last_runs（“最近一次已完成调度”的向后兼容语义）；
+    - started/artifact_written/delivery_sent/failed/interrupted 绝不写 last_runs，
+      避免“有尝试”被误读为“已执行完成”（P0 根因修复）。
+    """
+    now = datetime.now().isoformat(timespec="seconds")
+    js = state.setdefault("job_states", {}).setdefault(job_key, {})
+    js["phase"] = phase
+    js["attempt_key"] = attempt_key
+    js["updated_at"] = now
+    if started_at is not None:
+        js["started_at"] = started_at
+    if phase == PHASE_STARTED:
+        js["started_at"] = now
+    elif phase == PHASE_ARTIFACT_WRITTEN:
+        js.setdefault("artifact_written_at", now)
+    elif phase == PHASE_DELIVERY_SENT:
+        js.setdefault("delivery_sent_at", now)
+    elif phase == PHASE_COMPLETED:
+        js["completed_at"] = now
+        state.setdefault("last_runs", {})[job_key] = attempt_key
+        js.pop("last_error", None)
+    elif phase == PHASE_FAILED:
+        js["failed_at"] = now
+    elif phase == PHASE_INTERRUPTED:
+        js["interrupted_at"] = now
+    if last_error:
+        js["last_error"] = last_error
+    _save_state(state)
+
+
+def _daily_contract(worklog: str, delivery: str) -> tuple[str, str | None]:
+    """daily_report 契约判定：artifact + 必要投递均满足 → completed。
+
+    - delivery=sent 且 artifact 满足 → delivery_sent（调用方随后转 completed，
+      中间态时间戳保留在 job_states）；
+    - artifact 满足但 delivery=failed → artifact_written（等投递重试队列，不是完成）；
+    - 投递不必要（unconfigured/skipped-empty）且 artifact 满足 → completed；
+    - 任何 artifact 缺失或异常组合 → failed（不伪造完成、不把尝试当 sent）。
+    """
+    artifact_ok = worklog in ("written", "skipped-exists", "skipped-disabled", "skipped-unconfigured")
+    if delivery == "sent":
+        if artifact_ok:
+            return PHASE_DELIVERY_SENT, None
+        return PHASE_FAILED, f"delivery sent but artifact missing (worklog={worklog})"
+    if delivery == "failed":
+        if artifact_ok:
+            return PHASE_ARTIFACT_WRITTEN, "delivery:failed"
+        return PHASE_FAILED, f"delivery:failed and artifact missing (worklog={worklog})"
+    if delivery in ("unconfigured", "skipped-empty"):
+        if artifact_ok:
+            return PHASE_COMPLETED, None
+        return PHASE_FAILED, f"no delivery and artifact missing (worklog={worklog})"
+    return PHASE_FAILED, f"unexpected delivery={delivery!r}"
+
+
+def _derive_phase(job_key: str, result: dict, ok: bool, reason: str) -> tuple[str, str | None]:
+    """runner 结果 → 生命周期阶段（daily_report 走契约；其他 job 简化 ok/failed）。
+
+    分层规则（不互相掩盖）：
+    - artifact 已写但投递失败 → artifact_written（即使 _result_health 判非 ok）；
+    - 其余非 ok（empty/errors/exit）→ failed；
+    - daily_report 契约判定失败 → failed。
+    """
+    if not isinstance(result, dict):
+        return PHASE_FAILED, "runner returned non-dict result"
+    if job_key == "daily_report":
+        phase, err = _daily_contract(str(result.get("worklog") or ""), str(result.get("delivery") or ""))
+        if phase in (PHASE_FAILED, PHASE_ARTIFACT_WRITTEN):
+            return phase, err
+        if not ok:
+            return PHASE_FAILED, reason or "failed"
+        return phase, err
+    if not ok:
+        return PHASE_FAILED, reason or "failed"
+    return PHASE_COMPLETED, None
+
+
+def _attempt_already_handled(state: dict, job_key: str, attempt_key: str) -> bool:
+    """同一次调度（attempt_key）是否已处理（进行中/终态均防重）。
+
+    不依赖 last_runs（它在失败/中断时不更新）；job_states.attempt_key 覆盖
+    一切已触发过的调度，避免失败/中断后同一分钟重复触发。
+    """
+    js = (state.get("job_states") or {}).get(job_key) or {}
+    return js.get("attempt_key") == attempt_key
+
+
+def _reconcile_stale_states() -> None:
+    """进程启动时识别遗留非终态：上次进程中断留下的 scheduled/started/
+    artifact_written/delivery_sent → interrupted/stale，绝不静默视为成功。"""
+    state = _load_state()
+    now = datetime.now().isoformat(timespec="seconds")
+    changed = False
+    for job_key, js in (state.get("job_states") or {}).items():
+        if js.get("phase") not in _NONTERMINAL_PHASES:
+            continue
+        js["phase"] = PHASE_INTERRUPTED
+        js["interrupted_at"] = now
+        js.setdefault("last_error", "interrupted: process restarted before completion")
+        changed = True
+    if changed:
+        _save_state(state)
+
+
+def _legacy_phase_from_log(job_key: str, run_key: str) -> str:
+    """旧 schema 迁移辅助：从 scheduler.log 判定旧条目是 completed/failed/interrupted。
+
+    - 日志有该调度 ok 行 → completed；
+    - 日志有该调度非 ok 行 → failed（保留失败证据）；
+    - 日志无该调度行 → interrupted（有 last_runs 记录但无完成/失败证据 = 中断遗留）。
+    """
+    run_dt = _parse_run_key(run_key)
+    if run_dt is None:
+        return PHASE_INTERRUPTED
+    try:
+        lines = _LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return PHASE_INTERRUPTED
+    for line in lines:
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if rec.get("job") != job_key:
+            continue
+        try:
+            start = datetime.fromisoformat(rec.get("started_at", ""))
+        except (ValueError, TypeError):
+            continue
+        if start.strftime("%Y-%m-%d %H:%M") != run_dt.strftime("%Y-%m-%d %H:%M"):
+            continue
+        return PHASE_COMPLETED if rec.get("ok") else PHASE_FAILED
+    return PHASE_INTERRUPTED
+
+
+def _migrate_state_file() -> None:
+    """旧 schema（仅 last_runs，无 job_states）→ v2 迁移，向后兼容、幂等。
+
+    - last_runs 原样保留（旧代码可读）；
+    - 为每个 last_runs 条目创建 job_states 记录（legacy=True），阶段由日志证据判定；
+    - schema_version=2 且有 job_states 时直接返回（幂等）。
+    """
+    state = _load_state()
+    if state.get("schema_version") == 2 and state.get("job_states"):
+        return
+    job_states = state.setdefault("job_states", {})
+    for job_key, run_key in (state.get("last_runs") or {}).items():
+        if job_key in job_states:
+            continue
+        run_dt = _parse_run_key(run_key)
+        job_states[job_key] = {
+            "phase": _legacy_phase_from_log(job_key, run_key),
+            "attempt_key": run_key,
+            "started_at": run_dt.isoformat(timespec="seconds") if run_dt else None,
+            "legacy": True,
+        }
+    state["schema_version"] = 2
+    _save_state(state)
 
 
 def _last_cron_fire(expr: str, before: datetime) -> datetime | None:
@@ -693,17 +915,481 @@ def _health_report_line(snapshot: dict) -> str:
     return f"{icon} 链路状态：{label}"
 
 
+def _validate_generated_text(text: str, data: Optional[dict]) -> dict:
+    """Post-generation 事实校验：LLM 输出严格基于数据 allow-list。
+
+    Returns {"ok": bool, "issues": [str]}.
+    - 数据缺失/文本空 → 拒绝（不可证明即不发送）
+    - 已处理/待处理数量与数据不一致 → 拒绝
+    - 文本中的任何标题不在数据标题集（processed+pending）→ 拒绝（发明标题）
+    - 同一标题重复出现 → 拒绝（重复）
+    - 数据中每条 pending/processed 标题必须出现在文本 → 拒绝（遗漏）
+    """
+    issues: list[str] = []
+    if not text or not isinstance(data, dict):
+        return {"ok": False, "issues": ["缺少生成文本或数据"]}
+    processed = data.get("processed", []) or []
+    pending = data.get("pending", []) or []
+    allowed: set[str] = set(str(x) for x in processed)
+    for item in pending:
+        if isinstance(item, dict):
+            allowed.add(str(item.get("title") or ""))
+        else:
+            allowed.add(str(item))
+    allowed.discard("")
+
+    m = re.search(r"已处理（(\d+) 条）", text)
+    if not m:
+        issues.append("缺少 已处理 数量声明")
+    elif int(m.group(1)) != len(processed):
+        issues.append(f"已处理数量不匹配: 文本 {m.group(1)} vs 数据 {len(processed)}")
+    m2 = re.search(r"待处理（(\d+) 条）", text)
+    if not m2:
+        issues.append("缺少 待处理 数量声明")
+    elif int(m2.group(1)) != len(pending):
+        issues.append(f"待处理数量不匹配: 文本 {m2.group(1)} vs 数据 {len(pending)}")
+
+    # 标题级检查：逐行扫描非空、非统计行作为候选标题
+    seen_in_text: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith(("✅", "📌", "📋", "今天没有")):
+            continue
+        cand = re.sub(r"^\d+\.\s*", "", line)
+        cand = re.sub(r"^【[^】]+】", "", cand)
+        cand = cand.split("（截止")[0].strip()
+        if cand and not cand.startswith(("✅", "📌")):
+            seen_in_text.append(cand)
+    dups = [t for t in seen_in_text if seen_in_text.count(t) > 1]
+    if dups:
+        issues.append(f"标题重复: {sorted(set(dups))[:5]}")
+    invented = [t for t in seen_in_text if t not in allowed]
+    if invented:
+        issues.append(f"文本含数据外标题: {invented[:5]}")
+    omitted = [t for t in sorted(allowed) if t not in seen_in_text]
+    if omitted:
+        issues.append(f"数据标题遗漏: {omitted[:5]}")
+    return {"ok": not issues, "issues": issues}
+
+
+def _build_daily_records(data: dict) -> dict:
+    """Build canonical records with stable per-run opaque IDs.
+
+    Each processed/pending/week_completed item gets a stable ID (D1, D2, P1, W1 etc.)
+    paired with its user-readable title for downstream deterministic rendering.
+    """
+    processed = data.get("processed", []) or []
+    pending = data.get("pending", []) or []
+    week = data.get("week", {}) or {}
+
+    # Deterministic display-limit rule (selects BEFORE the model): today's
+    # processed is capped at 10, pending at 5, weekly highlights at 8 — the
+    # same documented production maximums the parser enforces. After the cap,
+    # every listed record is mandatory; the model cannot omit it.
+    records = {
+        "processed": [{"id": f"D{i+1}", "title": t} for i, t in enumerate(processed[:10])],
+        "pending": [
+            {
+                "id": f"P{i+1}",
+                "title": p["title"] if isinstance(p, dict) else str(p),
+                "label": p.get("label", "") if isinstance(p, dict) else "",
+                "due": p.get("due", "") if isinstance(p, dict) else "",
+                "blocked": bool(p.get("blocked") if isinstance(p, dict) else False),
+            }
+            for i, p in enumerate(pending[:5])
+        ],
+        "week_completed": [{"id": f"W{i+1}", "title": t} for i, t in enumerate(week.get("completed", [])[:8])],
+        "stats": {
+            "week_new": week.get("new_count", 0),
+            "week_remaining": week.get("remaining_count", 0),
+            "week_blocked": week.get("blocked_count", 0),
+            "week_due_next": week.get("due_next_week", 0),
+            "week_completed_count": week.get("completed_count", 0),
+        },
+    }
+    return records
+
+
+_DAILY_STRUCTURED_PROMPT = """根据注入的 Workbench 记录生成结构化日报分析。
+
+【记录】
+{records_json}
+
+要求：
+1. 从 processed 中选有价值的完成项放进 "processed" 数组（只放 ID，如 ["D1", "D2"]）；最多 10 条，没有则为空列表 []。
+2. 从 pending 中选需要提醒的待办放进 "pending" 数组（只放 ID）；最多 5 条，没有则为空列表 []。
+3. 从 week_completed 中选本周值得汇报的完成项放进 "week_completed" 数组（只放 ID，如 ["W1", "W2"]）；最多 8 条，没有则为空列表 []。
+
+输出严格 JSON（只引用记录中存在的 ID，不能发明新 ID，不要输出其他键）：
+{{"processed": ["D1", "D2"], "pending": ["P1"], "week_completed": ["W1"]}}
+
+没有值得报告的内容时输出：{{"processed": [], "pending": [], "week_completed": []}}"""
+
+
+def _parse_structured_output(text: str, records: dict) -> dict:
+    """Parse and validate structured model output against canonical records.
+
+    Returns {"ok": bool, "issues": [str], "parsed": dict|None}.
+    Only "processed", "pending", "week_completed" arrays of allowed IDs are accepted.
+    No free-text judgement/recommendation — those are generated deterministically.
+    Rejects unknown keys, duplicate IDs, unknown IDs, and over-limit arrays.
+    """
+    issues: list[str] = []
+    parsed: dict | None = None
+
+    if not text or not text.strip():
+        return {"ok": False, "issues": ["模型输出为空"], "parsed": None}
+
+    # Extract JSON from markdown code block or try whole text
+    json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+    if json_match:
+        json_str = json_match.group(1).strip()
+    else:
+        json_str = text.strip()
+
+    try:
+        parsed = json.loads(json_str)
+    except json.JSONDecodeError as exc:
+        return {"ok": False, "issues": [f"无效 JSON 格式: {exc}"], "parsed": None}
+
+    if not isinstance(parsed, dict):
+        return {"ok": False, "issues": ["输出不是 JSON 对象"], "parsed": None}
+
+    # Reject unknown keys (prevents smuggling prose through extra fields)
+    ALLOWED_KEYS = {"processed", "pending", "week_completed"}
+    unknown_keys = set(parsed.keys()) - ALLOWED_KEYS
+    if unknown_keys:
+        issues.append(f"未知键: {sorted(unknown_keys)}")
+
+    # Build allowed ID sets
+    allowed_processed = {r["id"] for r in records.get("processed", [])}
+    allowed_pending = {r["id"] for r in records.get("pending", [])}
+    allowed_week = {r["id"] for r in records.get("week_completed", [])}
+
+    # Validate processed IDs
+    selected_processed = parsed.get("processed")
+    if not isinstance(selected_processed, list):
+        issues.append("processed 不是数组")
+    else:
+        if len(selected_processed) > 10:
+            issues.append(f"processed 超过上限 (10): {len(selected_processed)} 条")
+        seen: set[str] = set()
+        for pid in selected_processed:
+            if not isinstance(pid, str):
+                issues.append(f"processed 含非字符串值: {pid}")
+            elif pid in seen:
+                issues.append(f"processed 含重复 ID: {pid}")
+            elif pid not in allowed_processed:
+                issues.append(f"processed 含未知 ID: {pid}")
+            else:
+                seen.add(pid)
+
+    # Validate pending IDs
+    selected_pending = parsed.get("pending")
+    if not isinstance(selected_pending, list):
+        issues.append("pending 不是数组")
+    else:
+        if len(selected_pending) > 5:
+            issues.append(f"pending 超过上限 (5): {len(selected_pending)} 条")
+        seen_p: set[str] = set()
+        for pid in selected_pending:
+            if not isinstance(pid, str):
+                issues.append(f"pending 含非字符串值: {pid}")
+            elif pid in seen_p:
+                issues.append(f"pending 含重复 ID: {pid}")
+            elif pid not in allowed_pending:
+                issues.append(f"pending 含未知 ID: {pid}")
+            else:
+                seen_p.add(pid)
+
+    # Validate week_completed IDs
+    selected_week = parsed.get("week_completed", [])
+    if not isinstance(selected_week, list):
+        issues.append("week_completed 不是数组")
+    else:
+        if len(selected_week) > 8:
+            issues.append(f"week_completed 超过上限 (8): {len(selected_week)} 条")
+        seen_w: set[str] = set()
+        for pid in selected_week:
+            if not isinstance(pid, str):
+                issues.append(f"week_completed 含非字符串值: {pid}")
+            elif pid in seen_w:
+                issues.append(f"week_completed 含重复 ID: {pid}")
+            elif pid not in allowed_week:
+                issues.append(f"week_completed 含未知 ID: {pid}")
+            else:
+                seen_w.add(pid)
+
+    # Mandatory current-day records: today's processed/pending facts cannot be
+    # omitted — the deterministic display-limit rule already selected them
+    # before the model, so every listed processed/pending ID must be present.
+    if isinstance(selected_processed, list) and not any(
+        i.startswith(("processed", "pending")) for i in issues
+    ):
+        missing_d = sorted(allowed_processed - set(selected_processed))
+        if missing_d:
+            issues.append(f"遗漏今日完成项: {missing_d}")
+
+    if isinstance(selected_pending, list) and not any(
+        i.startswith(("processed", "pending")) for i in issues
+    ):
+        missing_p = sorted(allowed_pending - set(selected_pending))
+        if missing_p:
+            issues.append(f"遗漏今日待办: {missing_p}")
+
+    return {"ok": not issues, "issues": issues, "parsed": parsed if not issues else None}
+
+
+def _generate_deterministic_judgement(records: dict, parsed: dict, data: dict | None = None) -> tuple[str, str]:
+    """Generate judgement and recommendation deterministically from validated source fields.
+
+    Args:
+        records: Canonical records with IDs, titles, due dates.
+        parsed: Validated parsed output with ID arrays only.
+        data: Optional top-level data dict (stats, link_health).
+
+    Returns:
+        (judgement, recommendation) — both derived from source fields, never invented.
+    """
+    # Counts come from collector records when present; fall back to validated
+    # parsed selection only in unit-test style calls without the real data dict.
+    data_processed = (data or {}).get("processed")
+    data_pending = (data or {}).get("pending")
+    week_stats = (data or {}).get("week") or {}
+    processed_count = len(data_processed) if isinstance(data_processed, list) else len(parsed.get("processed", []))
+    pending_count = len(data_pending) if isinstance(data_pending, list) else len(parsed.get("pending", []))
+    if week_stats.get("completed_count"):
+        week_count = int(week_stats["completed_count"])
+    else:
+        week_count = len(parsed.get("week_completed", []))
+
+    judgement_parts = []
+    if processed_count > 0:
+        judgement_parts.append(f"今日推进 {processed_count} 项")
+    if pending_count > 0:
+        judgement_parts.append(f"待处理 {pending_count} 项")
+    if week_count > 0:
+        judgement_parts.append(f"本周完成 {week_count} 项")
+
+    # Check for due items from pending records
+    pending_records = {r["id"]: r for r in records.get("pending", [])}
+    due_items = []
+    for pid in parsed.get("pending", []):
+        p = pending_records.get(pid)
+        if p and p.get("due"):
+            due_items.append(f"{p['title']} 到期 {p['due']}")
+    if due_items:
+        judgement_parts.append(f"到期 {len(due_items)} 项")
+        judgement_parts.extend(due_items[:2])
+
+    # Stats from collector records
+    stats = records.get("stats", {}) or {}
+    if data and (data.get("week") or {}):
+        stats = {**stats, **{k: v for k, v in data["week"].items() if k in ("blocked_count", "remaining_count", "due_next_week", "new_count")}}
+    blocked_count = stats.get("week_blocked", stats.get("blocked_count", 0))
+    if blocked_count > 0:
+        judgement_parts.append(f"阻塞 {blocked_count} 项")
+
+    judgement = "，".join(judgement_parts) if judgement_parts else ""
+
+    # Recommendation: only from actionable source fields
+    recommendation_parts = []
+    if due_items:
+        due_names = [d.split(" 到期")[0] for d in due_items[:2]]
+        recommendation_parts.append(f"到期项需处理: {'、'.join(due_names)}")
+    elif pending_count > 0:
+        remaining = stats.get("week_remaining", stats.get("remaining_count", 0))
+        if remaining > 0:
+            recommendation_parts.append(f"本周剩余 {remaining} 项待办")
+    if blocked_count > 0:
+        recommendation_parts.append(f"阻塞 {blocked_count} 项待解除")
+    health = (data or {}).get("link_health", {}) or {}
+    if isinstance(health, dict) and health.get("status") == "red":
+            recommendation_parts.append("链路状态需排查")
+
+    recommendation = "；".join(recommendation_parts) if recommendation_parts else ""
+
+    return judgement, recommendation
+
+
+def _render_worklog(records: dict, parsed: dict, today: str, data: dict | None = None) -> str:
+    """Render WORKLOG markdown from validated structured output."""
+    title_map: dict[str, str] = {}
+    for r in records.get("processed", []):
+        title_map[r["id"]] = r["title"]
+    for r in records.get("pending", []):
+        title_map[r["id"]] = r["title"]
+    for r in records.get("week_completed", []):
+        title_map[r["id"]] = r["title"]
+
+    try:
+        dt_parsed = datetime.fromisoformat(today) if "T" in today else datetime.strptime(today, "%Y-%m-%d")
+        weekday_cn = "一二三四五六日"[dt_parsed.weekday()]
+        header = f"# Workbench 日报 — {today} 周{weekday_cn}"
+    except (ValueError, IndexError):
+        header = f"# Workbench 日报 — {today}"
+
+    lines = [header, ""]
+
+    selected_processed = [title_map.get(pid, pid) for pid in parsed.get("processed", []) if pid in title_map]
+    if selected_processed:
+        lines.append("## 今日推进")
+        for title in selected_processed:
+            lines.append(f"- {title}")
+        lines.append("")
+
+    selected_pending = [title_map.get(pid, pid) for pid in parsed.get("pending", []) if pid in title_map]
+    if selected_pending:
+        lines.append("## 待处理")
+        for title in selected_pending:
+            lines.append(f"- {title}")
+        lines.append("")
+
+    # Deterministic judgement from source fields
+    judgement, recommendation = _generate_deterministic_judgement(records, parsed, data)
+    if judgement:
+        lines.append(f"**判断：** {judgement}")
+        lines.append("")
+
+    if recommendation:
+        lines.append(f"**建议：** {recommendation}")
+        lines.append("")
+
+    selected_week = [title_map.get(pid, pid) for pid in parsed.get("week_completed", []) if pid in title_map]
+    if selected_week:
+        lines.append("## 本周完成")
+        for title in selected_week:
+            lines.append(f"- {title}")
+        lines.append("")
+
+    if not selected_processed and not selected_pending and not selected_week and not judgement and not recommendation:
+        lines.append("今天没有实质变更。")
+
+    return "\n".join(lines).strip()
+
+
+def _render_qqmsg(records: dict, parsed: dict, today: str, data: dict | None = None) -> str:
+    """Render QQMSG from validated structured output."""
+    title_map: dict[str, str] = {}
+    for r in records.get("processed", []):
+        title_map[r["id"]] = r["title"]
+    for r in records.get("pending", []):
+        title_map[r["id"]] = r["title"]
+    for r in records.get("week_completed", []):
+        title_map[r["id"]] = r["title"]
+
+    try:
+        dt_parsed = datetime.fromisoformat(today) if "T" in today else datetime.strptime(today, "%Y-%m-%d")
+        weekday_cn = "一二三四五六日"[dt_parsed.weekday()]
+        header = f"📋 Workbench 日报 · {dt_parsed.month:02d}.{dt_parsed.day:02d} 周{weekday_cn}"
+    except (ValueError, IndexError):
+        header = "📋 Workbench 日报"
+
+    lines = [header]
+
+    # Deterministic judgement from source fields
+    judgement, recommendation = _generate_deterministic_judgement(records, parsed, data)
+    if judgement:
+        lines.append(f"💡 {judgement}")
+
+    if recommendation:
+        lines.append(f"➡️ {recommendation}")
+
+    selected_processed = [title_map.get(pid, pid) for pid in parsed.get("processed", []) if pid in title_map]
+    if selected_processed:
+        lines.append("✅ 今日推进")
+        for title in selected_processed:
+            lines.append(f"  · {title}")
+
+    selected_pending = [title_map.get(pid, pid) for pid in parsed.get("pending", []) if pid in title_map]
+    if selected_pending:
+        lines.append("⏳ 待处理")
+        for title in selected_pending:
+            lines.append(f"  · {title}")
+
+    selected_week = [title_map.get(pid, pid) for pid in parsed.get("week_completed", []) if pid in title_map]
+    if selected_week:
+        lines.append("📊 本周完成")
+        for title in selected_week:
+            lines.append(f"  · {title}")
+
+    if not selected_processed and not selected_pending and not selected_week and not judgement and not recommendation:
+        lines.append("今天没有收录和待办事项。")
+
+    return "\n".join(lines)
+
+
+def _deterministic_daily_text() -> str:
+    """确定性回退：脚本无参模式（模板输出），不依赖 LLM。"""
+    try:
+        r = _run_script(
+            "workbench_daily_report.py",
+            [],
+            timeout=120,
+            env=_script_env(),
+        )
+        if r["exit"] == 0:
+            return (r["stdout"] or "").strip()
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return ""
+
+
 def _job_daily_report(ctx: Any) -> dict:
-    """工作台每日日报（20:00）：数据 → LLM → 工作日志 → QQ。"""
+    """工作台每日日报（20:00）：数据 → LLM → 工作日志 → QQ。
+
+    事实闸门：数据必须经 data_validated（schema+事实），LLM 正文必须
+    通过 allow-list 校验（数量/标题集合/发明/重复/遗漏）；任一失败 →
+    确定性回退，绝不投递事实无效内容。
+    """
     from workbench_config import get_write_worklog
 
     data = _script_data("workbench_daily_report.py")
     health_snapshot = _current_health_snapshot()
     if isinstance(data, dict):
         data["link_health"] = health_snapshot
-    text = _generate(ctx, _DAILY_PROMPT, data)
-    if not text:
-        return {"generated": "empty", "worklog": "skipped-empty", "delivery": "skipped-empty"}
+    data_validated = bool(isinstance(data, dict) and data.get("data_validated") is True)
+    data_facts = data.get("factual_validation") if isinstance(data, dict) else None
+
+    text = ""
+    generated = "empty"
+    factual = {"ok": False, "issues": ["数据未通过事实校验"]}
+
+    if data_validated and data:
+        records = _build_daily_records(data)
+        prompt = _DAILY_STRUCTURED_PROMPT.format(records_json=json.dumps(records, ensure_ascii=False))
+        data_with_records = dict(data)
+        data_with_records["_records"] = records
+        model_raw = _generate(ctx, prompt, data_with_records)
+        if model_raw:
+            parsed = _parse_structured_output(model_raw, records)
+            if parsed["ok"]:
+                generated = "ok"
+                factual = {"ok": True, "issues": []}
+                wl = _render_worklog(records, parsed["parsed"], data["today"], data)
+                qq = _render_qqmsg(records, parsed["parsed"], data["today"], data)
+                text = f"<WORKLOG>\n{wl}\n</WORKLOG>\n<QQMSG>\n{qq}\n</QQMSG>"
+            else:
+                generated = "invalid"
+                factual = {"ok": False, "issues": parsed["issues"]}
+
+    if not text or not factual["ok"]:
+        # 无效/缺失生成 → 确定性回退（事实无效内容绝不因生成成功而发送）
+        text = _deterministic_daily_text()
+        text = _split_output(text).get("qq") or text
+        if not text:
+            return {
+                "generated": generated or "empty",
+                "data_validated": data_validated,
+                "factual_validation": factual,
+                "worklog": "skipped-empty",
+                "delivery": "skipped-empty",
+            }
+        generated = "fallback-invalid" if generated == "invalid" else "fallback"
+        factual = {"ok": True, "issues": [], "note": "deterministic fallback"}
+
     parts = _split_output(text)
     worklog = (
         _write_daily_worklog(parts.get("worklog") or "")
@@ -718,12 +1404,13 @@ def _job_daily_report(ctx: Any) -> dict:
     if delivery == "failed" and qq_message:
         _queue_delivery(qq_message)
     return {
-        "generated": "ok",
+        "generated": generated,
+        "data_validated": data_validated,
+        "factual_validation": {**data_facts, **factual} if isinstance(data_facts, dict) else factual,
         "worklog": worklog,
         "delivery": delivery,
         "queued_retry": delivery == "failed" and bool(qq_message),
     }
-
 
 def _job_nudge(ctx: Any) -> dict:
     """超期任务提醒（12:15）：数据 → LLM → QQ；无内容不发送。"""
@@ -803,6 +1490,8 @@ class Scheduler:
     async def _loop(self) -> None:
         from workbench_config import get_schedule
 
+        await asyncio.to_thread(_migrate_state_file)  # WB-S1-011：旧 schema → v2（幂等）
+        await asyncio.to_thread(_reconcile_stale_states)  # WB-S1-011：重启先标 stale，不静默成功
         await self._catch_up()  # A4：启动补跑（重启错过的日报/提醒/维护）
         last_heartbeat = time.monotonic()
         while not self._stop.is_set():
@@ -821,17 +1510,21 @@ class Scheduler:
                 if not match_cron(expr, now):
                     continue
                 key = f"{job['key']}|{now:%Y-%m-%d %H:%M}"
+                # WB-S1-011：防重走 job_states.attempt_key（覆盖进行中/失败/中断），
+                # last_runs 仅兜底旧 schema 语义（已完成）
+                if _attempt_already_handled(state, job["key"], key):
+                    continue
                 if state["last_runs"].get(job["key"]) == key:
                     continue
-                state["last_runs"][job["key"]] = key
-                _save_state(state)
-                await self._run_job(job)
+                _set_phase(state, job["key"], PHASE_SCHEDULED, key)  # 先标排定
+                await self._run_job(job, key)
             await asyncio.sleep(_TICK_SECONDS)
 
     async def _catch_up(self) -> None:
         """启动补跑（WB A4 / GT 复核确认）：重启后补跑 catch_up_hours 内错过的任务。
 
         lifecycle 不补（每 10 分钟，重启后自然跑）；空结果/失败照常走可见性统计。
+        WB-S1-011：已被尝试过（完成/失败/中断）的调度不重复补跑。
         """
         from workbench_config import get_catch_up_hours, get_schedule
 
@@ -854,6 +1547,11 @@ class Scheduler:
             last_run = _parse_run_key(state["last_runs"].get(job["key"], ""))
             if last_run and last_fire <= last_run:
                 continue
+            js_attempt = _parse_run_key(
+                (state.get("job_states") or {}).get(job["key"], {}).get("attempt_key", "")
+            )
+            if js_attempt and js_attempt >= last_fire:
+                continue
             age_hours = (now - last_fire).total_seconds() / 3600
             if age_hours > catch_hours:
                 continue
@@ -861,27 +1559,45 @@ class Scheduler:
                 "workbench catch-up: %s missed at %s (age %.1fh), running now",
                 job["key"], last_fire, age_hours,
             )
-            state["last_runs"][job["key"]] = f"{job['key']}|{last_fire:%Y-%m-%d %H:%M}"
-            _save_state(state)
-            await self._run_job(job)
+            attempt_key = f"{job['key']}|{last_fire:%Y-%m-%d %H:%M}"
+            _set_phase(state, job["key"], PHASE_SCHEDULED, attempt_key)
+            await self._run_job(job, attempt_key)
 
-    async def _run_job(self, job: dict) -> None:
+    async def _run_job(self, job: dict, attempt_key: str) -> None:
+        """执行一次调度并推进生命周期状态机。
+
+        - started → (daily_report) artifact_written → delivery_sent → completed；
+        - 失败/异常 → failed（保留 last_error + started_at）；
+        - 仅 completed 更新 last_runs（P0 根因：尝试不再冒充完成）。
+        """
+        job_key = job["key"]
         started_at = datetime.now().isoformat(timespec="seconds")
-        _log.info("workbench scheduler: run %s at %s", job["key"], started_at)
+        state = _load_state()
+        _set_phase(state, job_key, PHASE_STARTED, attempt_key, started_at=started_at)
+        _log.info("workbench scheduler: run %s at %s (attempt %s)", job_key, started_at, attempt_key)
         try:
-            result = await asyncio.to_thread(_JOB_RUNNERS[job["key"]], self._ctx)
+            result = await asyncio.to_thread(_JOB_RUNNERS[job_key], self._ctx)
             ok, reason = _result_health(result)
+            phase, phase_error = _derive_phase(job_key, result, ok, reason)
+            if phase == PHASE_DELIVERY_SENT:
+                # 中间态可观察：先落 delivery_sent（时间戳），确认契约后转 completed
+                _set_phase(state, job_key, PHASE_DELIVERY_SENT, attempt_key, started_at=started_at)
+                phase = PHASE_COMPLETED
+                phase_error = None
+            _set_phase(state, job_key, phase, attempt_key, started_at=started_at, last_error=phase_error)
             if not ok:
-                _record_error(job["key"], started_at, reason)
-            _append_log(job["key"], started_at, ok, result)
+                _record_error(job_key, started_at, reason)
+            _append_log(job_key, started_at, ok, result)
             _log.info(
-                "workbench scheduler: %s ok=%s reason=%s %s",
-                job["key"], ok, reason or "-", json.dumps(result, ensure_ascii=False),
+                "workbench scheduler: %s ok=%s phase=%s reason=%s %s",
+                job_key, ok, phase, reason or "-", json.dumps(result, ensure_ascii=False),
             )
         except Exception as exc:  # noqa: BLE001
-            _record_error(job["key"], started_at, f"exception:{str(exc)[:200]}")
-            _append_log(job["key"], started_at, False, {"error": str(exc)[:500]})
-            _log.error("workbench scheduler: %s failed: %s", job["key"], exc)
+            err = f"exception:{str(exc)[:200]}"
+            _set_phase(state, job_key, PHASE_FAILED, attempt_key, started_at=started_at, last_error=err)
+            _record_error(job_key, started_at, err)
+            _append_log(job_key, started_at, False, {"error": str(exc)[:500]})
+            _log.error("workbench scheduler: %s failed: %s", job_key, exc)
 
 
 _SCHEDULER: Optional[Scheduler] = None
@@ -910,9 +1626,24 @@ def stop_scheduler() -> None:
 
 
 def scheduler_status() -> dict:
-    """可观测性：当前租约/状态/最近触发/错误计数。"""
+    """可观测性：当前租约/状态/最近触发/生命周期阶段/错误计数。"""
     state = _load_state()
     error_count, last_error = _active_errors(state)
+    job_states = {
+        k: {
+            "phase": v.get("phase"),
+            "attempt_key": v.get("attempt_key"),
+            "started_at": v.get("started_at"),
+            "artifact_written_at": v.get("artifact_written_at"),
+            "delivery_sent_at": v.get("delivery_sent_at"),
+            "completed_at": v.get("completed_at"),
+            "failed_at": v.get("failed_at"),
+            "interrupted_at": v.get("interrupted_at"),
+            "last_error": v.get("last_error"),
+            "legacy": v.get("legacy", False),
+        }
+        for k, v in (state.get("job_states") or {}).items()
+    }
     return {
         "running": _SCHEDULER is not None and _SCHEDULER._thread is not None and _SCHEDULER._thread.is_alive(),
         "pid": os.getpid(),
@@ -922,6 +1653,7 @@ def scheduler_status() -> dict:
             else None
         ),
         "last_runs": state.get("last_runs", {}),
+        "job_states": job_states,
         "error_count": error_count,
         "last_error": last_error,
     }

@@ -190,15 +190,30 @@ class TestJobRunners:
         monkeypatch.setattr(scheduler, "_SCRIPTS_DIR", tmp_path)
         monkeypatch.setattr(scheduler, "_generate", lambda ctx, p, d: "")
         result = scheduler._job_daily_report(None)
-        assert result["generated"] == "empty"
+        # ctx=None + 无数据(脚本未配置) → 确定性回退模板或空，绝不崩溃、绝不伪造事实
+        assert isinstance(result, dict)
+        assert result["generated"] in {"empty", "fallback", "fallback-invalid"}
+        assert "data_validated" in result
+        assert "factual_validation" in result
 
     def test_daily_report_appends_yellow_link_status(self, monkeypatch):
         delivered = []
-        monkeypatch.setattr(scheduler, "_script_data", lambda _name: {"today": "2026-08-24"})
+        monkeypatch.setattr(
+            scheduler,
+            "_script_data",
+            lambda _name: {
+                "today": "2026-08-24",
+                "processed": [],
+                "pending": [],
+                "week": {"monday": "2026-08-24", "completed": [], "completed_count": 0, "new_count": 0, "remaining_count": 0, "due_next_week": 0, "blocked_count": 0},
+                "data_validated": True,
+                "factual_validation": {"ok": True, "issues": []},
+            },
+        )
         monkeypatch.setattr(
             scheduler,
             "_generate",
-            lambda _ctx, _prompt, _data: "<WORKLOG></WORKLOG><QQMSG>📋 日报正文</QQMSG>",
+            lambda _ctx, _prompt, _data: '{"processed": [], "pending": [], "week_completed": []}',
         )
         monkeypatch.setattr(
             scheduler,
@@ -210,15 +225,26 @@ class TestJobRunners:
 
         scheduler._job_daily_report(None)
 
-        assert delivered == ["📋 日报正文\n\n🟡 链路状态：链路待观察"]
+        assert delivered == ["📋 Workbench 日报 · 08.24 周一\n今天没有收录和待办事项。\n\n🟡 链路状态：链路待观察"]
 
     def test_daily_report_omits_green_link_status(self, monkeypatch):
         delivered = []
-        monkeypatch.setattr(scheduler, "_script_data", lambda _name: {"today": "2026-08-24"})
+        monkeypatch.setattr(
+            scheduler,
+            "_script_data",
+            lambda _name: {
+                "today": "2026-08-24",
+                "processed": [],
+                "pending": [],
+                "week": {"monday": "2026-08-24", "completed": [], "completed_count": 0, "new_count": 0, "remaining_count": 0, "due_next_week": 0, "blocked_count": 0},
+                "data_validated": True,
+                "factual_validation": {"ok": True, "issues": []},
+            },
+        )
         monkeypatch.setattr(
             scheduler,
             "_generate",
-            lambda _ctx, _prompt, _data: "<WORKLOG></WORKLOG><QQMSG>📋 日报正文</QQMSG>",
+            lambda _ctx, _prompt, _data: '{"processed": [], "pending": [], "week_completed": []}',
         )
         monkeypatch.setattr(
             scheduler,
@@ -230,7 +256,7 @@ class TestJobRunners:
 
         scheduler._job_daily_report(None)
 
-        assert delivered == ["📋 日报正文"]
+        assert delivered == ["📋 Workbench 日报 · 08.24 周一\n今天没有收录和待办事项。"]
 
     def test_deliver_empty_skips(self):
         assert scheduler._deliver("") == "skipped-empty"
@@ -391,13 +417,16 @@ class TestCatchUp:
         s = scheduler.Scheduler(None)
         ran: list[str] = []
 
-        async def fake_run_job(job):
+        async def fake_run_job(job, attempt_key):
             ran.append(job["key"])
 
         monkeypatch.setattr(s, "_run_job", fake_run_job)
         asyncio.run(s._catch_up())
         assert ran == ["daily_report"]
-        assert scheduler._load_state()["last_runs"]["daily_report"].startswith("daily_report|")
+        # WB-S1-011：catch_up 标 scheduled/started（job_states），不直接写 last_runs
+        js = scheduler._load_state()["job_states"]["daily_report"]
+        assert js["phase"] in (scheduler.PHASE_SCHEDULED, scheduler.PHASE_STARTED)
+        assert js["attempt_key"].startswith("daily_report|")
 
     def test_catch_up_skips_recent_run(self, monkeypatch, tmp_path):
         import asyncio
