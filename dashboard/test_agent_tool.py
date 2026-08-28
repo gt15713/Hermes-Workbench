@@ -423,7 +423,16 @@ def test_official_message_id_remains_preferred(wb, tmp_path):
         monkeypatch.undo()
 
 
-def test_real_platform_resolution_exposes_workbench_tool_to_qq_and_weixin():
+@pytest.mark.hermes_host_integration
+def test_real_platform_resolution_exposes_workbench_tool_to_qq_and_weixin(
+    host_integration_source,
+):
+    # 真实宿主集成：显式 HERMES_AGENT_SOURCE 才执行（不用替身），干净环境 skip。
+    del host_integration_source  # 门控生效即可，模块经 fixture 注入 sys.path。
+    import importlib
+
+    for _mod in ("hermes_cli.tools_config", "model_tools", "tools.registry"):
+        importlib.import_module(_mod)
     from agent_tool import register_workbench_tool
     from hermes_cli.tools_config import _get_platform_tools
     from model_tools import _clear_tool_defs_cache, get_tool_definitions
