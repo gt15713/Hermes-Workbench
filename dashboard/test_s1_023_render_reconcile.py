@@ -336,3 +336,233 @@ class TestReconcileRespectsLogEvidence:
         )
         js = state["job_states"]["lifecycle"]
         assert "interrupted_at" not in js
+
+
+# ---------------------------------------------------------------------------
+# WB-S1-024 A1：fallback 必须保留 WORKLOG 与 QQMSG 双通道
+# ---------------------------------------------------------------------------
+
+
+class TestFallbackDualChannel:
+    def _patch_common(self, monkeypatch, deterministic_text, model_raw):
+        calls = {"model": 0, "worklog": [], "qq": []}
+
+        def fake_generate(ctx, prompt, data=None):
+            calls["model"] += 1
+            return model_raw  # 坏输出：week 子集 → 渲染失败
+
+        def fake_worklog(text):
+            calls["worklog"].append(text)
+            return "written"
+
+        def fake_deliver(msg):
+            calls["qq"].append(msg)
+            return "sent"
+
+        monkeypatch.setattr(scheduler, "_script_data", lambda name: _valid_script_data())
+        monkeypatch.setattr(scheduler, "_current_health_snapshot", lambda: {"status": "green"})
+        monkeypatch.setattr(scheduler, "_generate", fake_generate)
+        monkeypatch.setattr(scheduler, "_deterministic_daily_text", lambda: deterministic_text)
+        monkeypatch.setattr(scheduler, "_deliver", fake_deliver)
+        monkeypatch.setattr(scheduler, "_write_daily_worklog", fake_worklog)
+        import workbench_config  # noqa: PLC0415
+        monkeypatch.setattr(workbench_config, "get_write_worklog", lambda: True)
+        return calls
+
+    def test_fallback_delivers_both_channels(self, monkeypatch):
+        """确定性 fallback 产出双通道 tagged text：worklog 收 WORKLOG，QQ 收 QQMSG。"""
+        deterministic_text = (
+            "<WORKLOG>\n# 工作台日报（确定性）\n本周完成 5 项\n</WORKLOG>\n"
+            "<QQMSG>\n📋 确定性日报 QQ 正文\n</QQMSG>"
+        )
+        model_raw = json.dumps(
+            {"processed": [], "pending": ["P1", "P2"], "week_completed": ["W1", "W2"]},
+            ensure_ascii=False,
+        )
+        calls = self._patch_common(monkeypatch, deterministic_text, model_raw)
+        result = scheduler._job_daily_report(ctx=None)
+        assert calls["model"] == 1
+        assert len(calls["worklog"]) == 1 and calls["worklog"][0].strip(), "worklog 通道不得为空"
+        assert len(calls["qq"]) == 1 and calls["qq"][0].strip(), "QQ 通道不得为空"
+        assert "工作台日报（确定性）" in calls["worklog"][0], "worklog 必须收到 WORKLOG 内容"
+        assert "确定性日报 QQ 正文" in calls["qq"][0], "QQ 必须收到 QQMSG 内容"
+        assert calls["worklog"][0].strip() != calls["qq"][0].strip(), "两通道内容不得相同"
+        assert result.get("render_fallback") == "deterministic"
+
+    def test_fallback_untagged_text_goes_to_qq_only(self, monkeypatch):
+        """无标记 fallback 输出：按 _split_output 兜底语义只走 QQ，worklog 允许 skipped-empty。"""
+        deterministic_text = "# 工作台日报\n## 今日完成\n- x\n"
+        model_raw = json.dumps(
+            {"processed": [], "pending": ["P1", "P2"], "week_completed": ["W1", "W2"]},
+            ensure_ascii=False,
+        )
+        calls = self._patch_common(monkeypatch, deterministic_text, model_raw)
+        scheduler._job_daily_report(ctx=None)
+        assert calls["model"] == 1
+        assert calls["qq"][0].strip(), "QQ 通道不得为空"
+
+
+# ---------------------------------------------------------------------------
+# WB-S1-024 A2：失败证据不得被 fallback 成功覆盖（四态分离 + delivery_validation）
+# ---------------------------------------------------------------------------
+
+
+class TestValidationStateSeparation:
+    def _patch_fallback(self, monkeypatch, deterministic_text):
+        monkeypatch.setattr(
+            scheduler, "_deterministic_daily_text", lambda: deterministic_text
+        )
+        monkeypatch.setattr(scheduler, "_deliver", lambda msg: "sent")
+        monkeypatch.setattr(
+            scheduler, "_write_daily_worklog", lambda text: "written"
+        )
+        import workbench_config  # noqa: PLC0415
+        monkeypatch.setattr(workbench_config, "get_write_worklog", lambda: True)
+
+    def test_input_failure_not_overridden_by_fallback(self, monkeypatch):
+        """data_validated=False：即使 fallback 可产出，输入事实失败必须保持。"""
+        bad_data = {
+            "data_validated": False,
+            "today": "2026-08-28",
+            "factual_validation": {"ok": False, "issues": ["完成数与列表不一致"]},
+        }
+        monkeypatch.setattr(scheduler, "_script_data", lambda name: bad_data)
+        monkeypatch.setattr(scheduler, "_current_health_snapshot", lambda: {"status": "green"})
+        self._patch_fallback(
+            monkeypatch,
+            "<WORKLOG>\n# 工作台日报（确定性）\n内容足够长用于写入\n</WORKLOG>\n"
+            "<QQMSG>\n📋 QQ 正文\n</QQMSG>",
+        )
+        result = scheduler._job_daily_report(ctx=None)
+        fv = result["factual_validation"]
+        assert fv.get("ok") is False, f"输入失败不得被 fallback 翻成 ok=True: {fv}"
+        assert "完成数与列表不一致" in fv.get("issues", [])
+
+    def test_render_failure_preserves_four_states(self, monkeypatch):
+        """模型渲染失败但输入有效：input/render/fallback 三态分别留证 + delivery_validation。"""
+        monkeypatch.setattr(scheduler, "_script_data", lambda name: _valid_script_data())
+        monkeypatch.setattr(scheduler, "_current_health_snapshot", lambda: {"status": "green"})
+        monkeypatch.setattr(
+            scheduler,
+            "_generate",
+            lambda ctx, prompt, data=None: json.dumps(
+                {"processed": [], "pending": ["P1", "P2"], "week_completed": ["W1", "W2"]},
+                ensure_ascii=False,
+            ),
+        )
+        self._patch_fallback(
+            monkeypatch,
+            "<WORKLOG>\n# 工作台日报（确定性）\n内容足够长用于写入\n</WORKLOG>\n"
+            "<QQMSG>\n📋 QQ 正文\n</QQMSG>",
+        )
+        result = scheduler._job_daily_report(ctx=None)
+        inp = result["input_validation"]
+        ren = result["render_validation"]
+        fb = result["fallback_validation"]
+        dv = result["delivery_validation"]
+        assert inp["ok"] is True, "input_validation 必须保留首次数据验证事实"
+        assert ren["ok"] is False and ren["issues"], "render_validation 必须保留模型渲染失败"
+        assert fb["ok"] is True, "fallback_validation 只描述确定性产物"
+        assert dv["ok"] is True and dv["source"] == "deterministic", dv
+        # 旧字段兼容：factual_validation 仍存在
+        assert "factual_validation" in result
+
+    def test_model_success_delivery_source_is_model(self, monkeypatch):
+        """模型渲染成功路径：delivery_validation.source == model。"""
+        monkeypatch.setattr(scheduler, "_script_data", lambda name: _valid_script_data())
+        monkeypatch.setattr(scheduler, "_current_health_snapshot", lambda: {"status": "green"})
+        monkeypatch.setattr(
+            scheduler,
+            "_generate",
+            lambda ctx, prompt, data=None: json.dumps(
+                _parsed_full_real_ids()["parsed"], ensure_ascii=False
+            ),
+        )
+        self._patch_fallback(
+            monkeypatch,
+            "<QQMSG>\n不应被使用\n</QQMSG>",
+        )
+        result = scheduler._job_daily_report(ctx=None)
+        assert result["delivery_validation"]["source"] == "model"
+        assert result["delivery_validation"]["ok"] is True
+
+
+# ---------------------------------------------------------------------------
+# WB-S1-024 A3：同一 attempt 多条日志 → 以最后一条终态证据结算
+# ---------------------------------------------------------------------------
+
+
+class TestReconcileUsesFinalRecord:
+    @pytest.fixture()
+    def isolated_state(self, monkeypatch, tmp_path):
+        state_file = tmp_path / "scheduler-state.json"
+        log_file = tmp_path / "workbench-scheduler.log"
+        monkeypatch.setattr(scheduler, "_STATE_FILE", state_file)
+        monkeypatch.setattr(scheduler, "_LOG_FILE", log_file)
+        return {"state_file": state_file, "log_file": log_file}
+
+    def _state(self, job, attempt, phase="started"):
+        return {
+            "job_states": {
+                job: {
+                    "phase": phase,
+                    "attempt_key": attempt,
+                    "started_at": attempt.split("|", 1)[1] + ":00",
+                }
+            },
+            "last_runs": {},
+        }
+
+    def test_old_fail_new_ok_settles_completed(self, isolated_state):
+        """同一 attempt 分钟：先 ok=false 后 ok=true → 以最后一条为准 completed。"""
+        lines = [
+            {"job": "daily_report", "started_at": "2026-08-28T19:58:01", "ok": False},
+            {"job": "daily_report", "started_at": "2026-08-28T19:58:05", "ok": True},
+        ]
+        isolated_state["log_file"].write_text(
+            "\n".join(json.dumps(x, ensure_ascii=False) for x in lines) + "\n",
+            encoding="utf-8",
+        )
+        scheduler._STATE_FILE.write_text(
+            json.dumps(self._state("daily_report", "daily_report|2026-08-28 19:58")),
+            encoding="utf-8",
+        )
+        scheduler._reconcile_stale_states()
+        loaded = json.loads(scheduler._STATE_FILE.read_text(encoding="utf-8"))
+        js = loaded["job_states"]["daily_report"]
+        assert js["phase"] == "completed", js
+
+    def test_old_ok_new_fail_settles_interrupted_with_error(self, isolated_state):
+        """同一 attempt 分钟：先 ok=true 后 ok=false → interrupted + 保留失败证据。"""
+        lines = [
+            {"job": "lifecycle", "started_at": "2026-08-28T20:20:01", "ok": True},
+            {"job": "lifecycle", "started_at": "2026-08-28T20:20:09", "ok": False},
+        ]
+        isolated_state["log_file"].write_text(
+            "\n".join(json.dumps(x, ensure_ascii=False) for x in lines) + "\n",
+            encoding="utf-8",
+        )
+        scheduler._STATE_FILE.write_text(
+            json.dumps(self._state("lifecycle", "lifecycle|2026-08-28 20:20")),
+            encoding="utf-8",
+        )
+        scheduler._reconcile_stale_states()
+        loaded = json.loads(scheduler._STATE_FILE.read_text(encoding="utf-8"))
+        js = loaded["job_states"]["lifecycle"]
+        assert js["phase"] == "interrupted", js
+        assert "log shows failed attempt" in js.get("last_error", "")
+
+    def test_no_matching_log_remains_interrupted(self, isolated_state):
+        """同 job 不同分钟日志 ≠ 匹配；无匹配 → interrupted。"""
+        rec = {"job": "daily_report", "started_at": "2026-08-27T19:58:01", "ok": True}
+        isolated_state["log_file"].write_text(
+            json.dumps(rec, ensure_ascii=False) + "\n", encoding="utf-8"
+        )
+        scheduler._STATE_FILE.write_text(
+            json.dumps(self._state("daily_report", "daily_report|2026-08-28 19:58")),
+            encoding="utf-8",
+        )
+        scheduler._reconcile_stale_states()
+        loaded = json.loads(scheduler._STATE_FILE.read_text(encoding="utf-8"))
+        js = loaded["job_states"]["daily_report"]
+        assert js["phase"] == "interrupted", js

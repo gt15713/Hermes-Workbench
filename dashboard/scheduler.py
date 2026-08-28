@@ -515,6 +515,8 @@ def _reconcile_stale_states() -> None:
     WB-S1-023: 结算前先查 scheduler.log 证据 —— 该 attempt 若已有 ok 完成行，
     按日志证据结算为 completed（8-28 20:07 实证：19:50/20:00 均执行成功却被
     误标 interrupted）；无日志行或日志行非 ok 仍标 interrupted。
+    WB-S1-024: 同一 job/同一 attempt 分钟可能存在多条终态记录（重试）——
+    以日志文件中**最后一条**合法匹配记录为最终证据，不用最旧证据结算。
     """
     state = _load_state()
     now = datetime.now().isoformat(timespec="seconds")
@@ -530,6 +532,7 @@ def _reconcile_stale_states() -> None:
                 lines = _LOG_FILE.read_text(encoding="utf-8", errors="replace").splitlines()
             except OSError:
                 lines = []
+            final_rec = None
             for line in lines:
                 try:
                     rec = json.loads(line)
@@ -543,11 +546,13 @@ def _reconcile_stale_states() -> None:
                     continue
                 if start.strftime("%Y-%m-%d %H:%M") != run_dt.strftime("%Y-%m-%d %H:%M"):
                     continue
-                if rec.get("ok"):
-                    # 日志证明该 attempt 已成功完成 → 结算为 completed
+                final_rec = rec  # 持续覆盖：保留最后一条匹配记录
+            if final_rec is not None:
+                if final_rec.get("ok"):
+                    # 日志证明该 attempt 最终成功 → 结算为 completed
                     js["phase"] = PHASE_COMPLETED
-                    js["completed_at"] = rec.get(
-                        "ts", start.isoformat(timespec="seconds")
+                    js["completed_at"] = final_rec.get(
+                        "ts", final_rec.get("started_at", run_dt.isoformat(timespec="seconds"))
                     )
                     state.setdefault("last_runs", {})[_job_key] = run_key
                     js.pop("last_error", None)
@@ -559,7 +564,6 @@ def _reconcile_stale_states() -> None:
                         "last_error", "interrupted: log shows failed attempt"
                     )
                 settled = True
-                break
         if not settled:
             js["phase"] = PHASE_INTERRUPTED
             js["interrupted_at"] = now
@@ -1483,30 +1487,38 @@ def _job_daily_report(ctx: Any) -> dict:
 
     if not text or not factual["ok"]:
         # WB-S1-023 fail-closed：渲染不合格 → 确定性回退（不再次调用模型），
-        # 记录 render_fallback=deterministic + 失败原因，事实无效内容绝不投递
+        # 记录 render_fallback=deterministic + 失败原因，事实无效内容绝不投递。
+        # WB-S1-024 A1：保留完整 deterministic tagged text，到统一 _split_output
+        # 位置只拆一次，不提前取 qq 丢掉 WORKLOG 段。
         render_fallback = "deterministic"
-        text = _deterministic_daily_text()
-        text = _split_output(text).get("qq") or text
-        if not text:
+        fallback_text = _deterministic_daily_text()
+        if not fallback_text:
             return {
                 "generated": generated or "empty",
                 "data_validated": data_validated,
-                "factual_validation": factual,
+                "input_validation": {"ok": data_validated, "issues": [] if data_validated else (data_facts or {}).get("issues", ["数据未通过事实校验"]) if isinstance(data_facts, dict) else ["数据未通过事实校验"]},
+                "factual_validation": factual if not isinstance(data_facts, dict) else {**data_facts, **factual},
                 "render_validation": render_validation,
+                "fallback_validation": {"ok": False, "issues": ["deterministic fallback produced empty output"]},
+                "delivery_validation": {"ok": False, "source": "deterministic", "issues": ["fallback empty"]},
                 "render_fallback": render_fallback,
                 "worklog": "skipped-empty",
                 "delivery": "skipped-empty",
             }
+        text = fallback_text
         generated = "fallback-invalid" if generated in ("invalid", "render-invalid") else "fallback"
-        factual = {"ok": True, "issues": [], "note": "deterministic fallback",
-                   "render_issues": render_validation["issues"]}
         # render_validation 保留原始失败证据（ok=False + issues），不冒充合格
         render_validation = {"ok": False, "issues": render_validation.get("issues", []),
                              "note": "deterministic fallback (render validation failed)"}
+        # fallback_validation 只描述确定性产物自身的交付有效性
+        fallback_validation = {"ok": True, "issues": []}
+    else:
+        fallback_validation = None
 
     parts = _split_output(text)
+    worklog_text = parts.get("worklog") or ""
     worklog = (
-        _write_daily_worklog(parts.get("worklog") or "")
+        _write_daily_worklog(worklog_text)
         if get_write_worklog()
         else "skipped-disabled"
     )
@@ -1517,15 +1529,49 @@ def _job_daily_report(ctx: Any) -> dict:
     delivery = _deliver(qq_message)
     if delivery == "failed" and qq_message:
         _queue_delivery(qq_message)
+    # WB-S1-024 A2：四态分离 —— input/render/fallback/delivery 各自独立留证，
+    # 失败证据不得被后续阶段覆盖或清空。
+    if isinstance(data_facts, dict) and "ok" in data_facts:
+        input_validation = {"ok": bool(data_facts.get("ok")) and data_validated,
+                            "issues": list(data_facts.get("issues", []))}
+    else:
+        input_validation = {"ok": data_validated,
+                            "issues": [] if data_validated else ["数据未通过事实校验"]}
+    if render_fallback:
+        # 旧字段兼容：factual_validation 反映最终交付产物状态（fallback ok）；
+        # 但当输入事实本身失败时保留原始失败，不得翻成成功。
+        if not input_validation["ok"]:
+            # 原始数据验证事实优先：保留首次 issues，不被本地默认文案覆盖
+            factual_compat = {"ok": False,
+                              "note": "deterministic fallback; input facts invalid"}
+            if isinstance(data_facts, dict):
+                factual_compat["issues"] = list(data_facts.get("issues", factual["issues"]))
+            else:
+                factual_compat["issues"] = list(factual["issues"])
+        else:
+            factual_compat = {"ok": True, "issues": [], "note": "deterministic fallback",
+                              "render_issues": render_validation.get("issues", [])}
+        delivery_validation = {"ok": bool(fallback_validation and fallback_validation["ok"]) and delivery != "failed",
+                               "source": "deterministic",
+                               "issues": [] if delivery != "failed" else ["delivery failed; queued retry"]}
+    else:
+        factual_compat = {**data_facts, **factual} if isinstance(data_facts, dict) else factual
+        delivery_validation = {"ok": bool(generated == "ok") and delivery != "failed",
+                               "source": "model",
+                               "issues": [] if delivery != "failed" else ["delivery failed; queued retry"]}
     result = {
         "generated": generated,
         "data_validated": data_validated,
-        "factual_validation": {**data_facts, **factual} if isinstance(data_facts, dict) else factual,
+        "input_validation": input_validation,
+        "factual_validation": factual_compat,
         "render_validation": render_validation,
+        "delivery_validation": delivery_validation,
         "worklog": worklog,
         "delivery": delivery,
         "queued_retry": delivery == "failed" and bool(qq_message),
     }
+    if fallback_validation is not None:
+        result["fallback_validation"] = fallback_validation
     if render_fallback:
         result["render_fallback"] = render_fallback
     return result
