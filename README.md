@@ -21,6 +21,10 @@ Workbench 负责 **登记、展示、索引、提醒、状态协调与归档**�
 ## 主要功能
 
 - 通过授权后的 `/wb` 命令收录 QQ、微信私聊或 QQ 群聊中的链接、任务和想法；QQ群当前需明确 @机器人；
+- 默认首页为四区投影：今日 / 待审核 / 需要注意 / 最近完成；旧版看板和 Table 视图保留为「旧版数据」兼容入口，未删除；
+- 首页顶部常驻搜索（复用后端 `/search` 索引）与链路健康三色反馈（绿 / 黄 / 红，不可达独立提示）；
+- 一张卡片一个主操作（开始处理 / 查看进度 / 确认处理 / 查看证据 / 打开原会话 / 摘要续接），次要操作收进抽屉；
+- API 异常统一翻译为可行动的中文文案，不向用户抛出 IPC 原始错误；
 - 看板与 Table 两种视图，支持搜索、标签和到期筛选；
 - 待验证、待回看、任务、已处理、回收站及自定义分区；
 - 运行历史、最近执行结果、失败原因和投递状态可见；
@@ -31,7 +35,9 @@ Workbench 负责 **登记、展示、索引、提醒、状态协调与归档**�
 
 ### 已审核内容收件箱
 
-内容收录只创建本地待审核项，不会自动写入 Obsidian。用户明确选择“沉淀到 Obsidian”后，Workbench 才创建确定性的 Hermes 摄入任务；只有 Hermes 返回真实笔记路径后，界面才显示沉淀成功并归档源内容。排队、失败或刷新后均保留重试入口。
+内容收录只创建本地待审核项，不会自动写入 Obsidian。用户明确选择“沉淀到 Obsidian”后，Workbench 才创建确定性的 Hermes 摄入任务；只有 Hermes 返回真实笔记路径后，界面才显示沉淀成功并归档源内容。排队、失败或刷新后均保留重试入口；抽取失败不会伪装为成功，回执区分成功 / 失败 / 无操作（幂等）三态。
+
+除 `/wb` 命令外，Hermes Agent 侧提供 `workbench_capture` 工具：仅当用户在当前对话中明确要求保存工作时，由已授权的 Agent 轮次调用登记或续接任务；身份绑定取自本轮真实消息记录，未经用户请求不会自动建档。
 
 Obsidian MCP 不是必需依赖。默认可靠边界是 Hermes 调用 `obsidian-zh-ingest` Skill 并通过文件系统写入 Vault；MCP 仅作为 Obsidian 正在运行时的可选增强。
 
@@ -193,8 +199,12 @@ QQ/微信/手工收录
 - 运行 bundle：`desktop/plugin.js`（生成后随仓库发布）；
 - 脚本：`scripts/`（日报、提醒和维护任务）。
 
+后端测试必须使用 Hermes Agent 开发 venv 的解释器，并把 `PYTHONPATH` 指向 hermes-agent 源码根，否则 gateway 相关模块无法导入、产生假失败：
+
 ```powershell
-python -m pytest dashboard -q
+# cwd: <HERMES_HOME>/plugins/workbench-view
+$env:PYTHONPATH = "<HERMES_HOME>/hermes-agent"
+<HERMES_HOME>/hermes-agent/.venv/Scripts/python.exe -m pytest dashboard -q
 
 cd desktop-src
 npm ci
