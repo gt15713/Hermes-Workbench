@@ -211,10 +211,11 @@ class TestFailClosed:
         monkeypatch.setattr(scheduler, "_current_health_snapshot", lambda: {"status": "green"})
         monkeypatch.setattr(scheduler, "_generate", fake_generate)
         monkeypatch.setattr(
-            scheduler, "_deterministic_daily_text",
-            lambda: "<QQMSG>\n📋 确定性日报\n</QQMSG>"
+            scheduler, "_deterministic_daily_run",
+            lambda: {"exit": 0,
+                     "stdout": "<WORKLOG>\n# 工作台日报（确定性）\n内容足够长用于写入工作日志\n</WORKLOG>\n<QQMSG>\n📋 确定性日报\n</QQMSG>",
+                     "stderr": ""}
         )
-        monkeypatch.setattr(scheduler, "_deliver", lambda msg: "sent")
         monkeypatch.setattr(
             scheduler, "_write_daily_worklog", lambda text: "written"
         )
@@ -362,7 +363,7 @@ class TestFallbackDualChannel:
         monkeypatch.setattr(scheduler, "_script_data", lambda name: _valid_script_data())
         monkeypatch.setattr(scheduler, "_current_health_snapshot", lambda: {"status": "green"})
         monkeypatch.setattr(scheduler, "_generate", fake_generate)
-        monkeypatch.setattr(scheduler, "_deterministic_daily_text", lambda: deterministic_text)
+        monkeypatch.setattr(scheduler, "_deterministic_daily_run", lambda: {"exit": 0, "stdout": deterministic_text, "stderr": ""})
         monkeypatch.setattr(scheduler, "_deliver", fake_deliver)
         monkeypatch.setattr(scheduler, "_write_daily_worklog", fake_worklog)
         import workbench_config  # noqa: PLC0415
@@ -389,17 +390,20 @@ class TestFallbackDualChannel:
         assert calls["worklog"][0].strip() != calls["qq"][0].strip(), "两通道内容不得相同"
         assert result.get("render_fallback") == "deterministic"
 
-    def test_fallback_untagged_text_goes_to_qq_only(self, monkeypatch):
-        """无标记 fallback 输出：按 _split_output 兜底语义只走 QQ，worklog 允许 skipped-empty。"""
+    def test_fallback_untagged_text_is_invalid_no_sinks(self, monkeypatch):
+        """WB-S1-025：无标记 fallback（缺 <WORKLOG>/<QQMSG> tag）→ 验证失败 → 零 sink。"""
         deterministic_text = "# 工作台日报\n## 今日完成\n- x\n"
         model_raw = json.dumps(
             {"processed": [], "pending": ["P1", "P2"], "week_completed": ["W1", "W2"]},
             ensure_ascii=False,
         )
         calls = self._patch_common(monkeypatch, deterministic_text, model_raw)
-        scheduler._job_daily_report(ctx=None)
+        result = scheduler._job_daily_report(ctx=None)
         assert calls["model"] == 1
-        assert calls["qq"][0].strip(), "QQ 通道不得为空"
+        assert calls["qq"] == [] and calls["worklog"] == [], "fallback 无效时零 sink 调用"
+        assert result["fallback_validation"]["ok"] is False
+        assert result["delivery_validation"]["ok"] is False
+
 
 
 # ---------------------------------------------------------------------------
@@ -410,7 +414,8 @@ class TestFallbackDualChannel:
 class TestValidationStateSeparation:
     def _patch_fallback(self, monkeypatch, deterministic_text):
         monkeypatch.setattr(
-            scheduler, "_deterministic_daily_text", lambda: deterministic_text
+            scheduler, "_deterministic_daily_run",
+            lambda: {"exit": 0, "stdout": deterministic_text, "stderr": ""}
         )
         monkeypatch.setattr(scheduler, "_deliver", lambda msg: "sent")
         monkeypatch.setattr(

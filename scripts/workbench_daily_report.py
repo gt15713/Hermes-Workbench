@@ -351,9 +351,23 @@ def main() -> int:
     data = collect(args.date)
     today_s = str(data["today"])
     validation = validate_report_data(data)
+    if not validation["schema_ok"] or not validation["facts_ok"]:
+        # WB-S1-025 fail-closed：事实/schema 未过 → 非零退出、无可投递 stdout、
+        # 精确 issues 保留在 stderr（结构化 JSON）。--data 与无参数同门。
+        print(
+            json.dumps(
+                {
+                    "error": "daily_report_data_invalid",
+                    "schema_ok": validation["schema_ok"],
+                    "facts_ok": validation["facts_ok"],
+                    "issues": validation["issues"],
+                },
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+        return 1
     if args.data:
-        if not validation["schema_ok"] or not validation["facts_ok"]:
-            return 1
         data["data_validated"] = validation["schema_ok"] and validation["facts_ok"]
         data["factual_validation"] = {
             "ok": validation["facts_ok"],
@@ -364,18 +378,36 @@ def main() -> int:
 
     processed = data["processed"]
     pending = data["pending"]
-    lines = [f"📋 今日处理日报（{today_s}）", ""]
-    lines.append(f"✅ 已处理（{len(processed)} 条）")
+    # WB-S1-025：无参数路径输出两个显式、非空、用途适配的 tagged 区段：
+    # <WORKLOG> 工作日志正文（完整记录，供写 运维/工作日志）；
+    # <QQMSG> 精简摘要（供 QQ 投递）。两段可共享事实，但内容各自适配。
+    worklog_lines = [f"# 工作台日报（{today_s}）", "", "## 今日完成"]
     for i, title in enumerate(processed, 1):
-        lines.append(f"  {i}. {title}")
-    lines.append("")
-    lines.append(f"📌 待处理（{len(pending)} 条）")
+        worklog_lines.append(f"  {i}. {title}")
+    worklog_lines.append("")
+    worklog_lines.append("## 待处理")
     for item in pending:
         suffix = f"（截止 {item['due']}）" if item["due"] else ""
-        lines.append(f"  【{item['label']}】{item['title']}{suffix}")
+        worklog_lines.append(f"  【{item['label']}】{item['title']}{suffix}")
     if not processed and not pending:
-        lines.append("今天没有收录和待办事项。")
-    print("\n".join(lines))
+        worklog_lines.append("今天没有收录和待办事项。")
+    worklog_text = "\n".join(worklog_lines)
+
+    qq_lines = [f"📋 今日处理日报（{today_s}）"]
+    if processed:
+        qq_lines.append(f"✅ 已处理 {len(processed)} 条")
+        for title in processed[:5]:
+            qq_lines.append(f"· {title}")
+    if pending:
+        qq_lines.append(f"📌 待处理 {len(pending)} 条")
+        for item in pending[:5]:
+            suffix = f"（截止 {item['due']}）" if item["due"] else ""
+            qq_lines.append(f"· 【{item['label']}】{item['title']}{suffix}")
+    if not processed and not pending:
+        qq_lines.append("今天没有收录和待办事项。")
+    qq_text = "\n".join(qq_lines)
+
+    print(f"<WORKLOG>\n{worklog_text}\n</WORKLOG>\n<QQMSG>\n{qq_text}\n</QQMSG>")
     return 0
 
 

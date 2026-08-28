@@ -252,7 +252,12 @@ def test_invalid_generation_not_delivered_and_fallback_delivered_once(tmp_path, 
     monkeypatch.setattr(sched, "_current_health_snapshot", lambda: {"status": "green", "label": "链路正常"})
     monkeypatch.setattr(sched, "_deliver", lambda text: delivered.append(text) or "sent")
     monkeypatch.setattr("workbench_config.get_write_worklog", lambda: False)
-    monkeypatch.setattr(sched, "_deterministic_daily_text", lambda: "📋 确定性回退模板")
+    monkeypatch.setattr(
+        sched, "_deterministic_daily_run",
+        lambda: {"exit": 0,
+                 "stdout": "<WORKLOG>\n# 工作台日报（确定性）\n内容足够长用于写入工作日志\n</WORKLOG>\n<QQMSG>\n📋 确定性回退模板\n</QQMSG>",
+                 "stderr": ""},
+    )
 
     result = sched._job_daily_report(None)
 

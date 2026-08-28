@@ -1437,6 +1437,96 @@ def _deterministic_daily_text() -> str:
     return ""
 
 
+_DELIVERY_STATUS_REASONS = {
+    "failed": "delivery failed; requires retry",
+    "unconfigured": "deliver target unconfigured",
+    "skipped-empty": "delivery skipped-empty: empty message",
+    "error-no-hermes": "hermes binary unavailable (error-no-hermes)",
+}
+
+
+def _delivery_validation(required: bool, delivery: str, source: str) -> dict:
+    """WB-S1-025 A3：投递状态真实语义。
+
+    - required=True 时只有 delivery == "sent" 才是 ok=True；
+    - failed/unconfigured/skipped-empty/error-no-hermes/未知 → ok=False 且保留
+      exact status/reason；
+    - required=False（无需投递，如 QQ 段为空）→ 独立 required=false/
+      status=not_applicable 语义，绝不冒充“已发送成功”。
+    """
+    if not required:
+        return {"ok": False, "required": False, "status": "not_applicable",
+                "reason": "no qq message to deliver", "source": source, "issues": []}
+    if delivery == "sent":
+        return {"ok": True, "required": True, "status": "sent", "reason": "",
+                "source": source, "issues": []}
+    reason = _DELIVERY_STATUS_REASONS.get(delivery, f"unknown delivery status {delivery!r}")
+    return {"ok": False, "required": True, "status": delivery, "reason": reason,
+            "source": source, "issues": [reason]}
+
+
+def _deterministic_daily_run() -> dict:
+    """WB-S1-025 A2：确定性脚本完整运行结果（exit/stdout/stderr），供真实 fallback 验证。"""
+    try:
+        return _run_script(
+            "workbench_daily_report.py",
+            [],
+            timeout=120,
+            env=_script_env(),
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return {"exit": -1, "stdout": "", "stderr": f"deterministic script launch failed: {exc}"}
+
+
+def _deterministic_daily_text() -> str:
+    """确定性回退兼容入口（旧调用/旧测试）：exit==0 才消费 stdout。"""
+    run = _deterministic_daily_run()
+    if run.get("exit") == 0:
+        return (run.get("stdout") or "").strip()
+    return ""
+
+
+def _validate_fallback_text(text: str) -> dict:
+    """WB-S1-025 A2：确定性产物结构验证。唯一解析入口 = _split_output（不复制 parser）。
+
+    - 必须同时含完整 <WORKLOG> 与 <QQMSG> 标签；
+    - WORKLOG 段非空；QQMSG 段非空；
+    - 任一缺失/残缺/空段 → ok=False + 精确 issues。
+    """
+    if not text:
+        return {"ok": False, "issues": ["deterministic fallback produced empty output"],
+                "worklog": "", "qq": ""}
+    parts = _split_output(text)
+    worklog = parts.get("worklog") or ""
+    qq = parts.get("qq") or ""
+    issues: list[str] = []
+    if "<WORKLOG>" not in text or "</WORKLOG>" not in text:
+        issues.append("fallback output missing <WORKLOG> tag")
+    if "<QQMSG>" not in text or "</QQMSG>" not in text:
+        issues.append("fallback output missing <QQMSG> tag")
+    if not worklog:
+        issues.append("WORKLOG section empty or missing")
+    if not qq:
+        issues.append("QQMSG section empty or missing")
+    return {"ok": not issues, "issues": issues, "worklog": worklog, "qq": qq}
+
+
+def _validate_fallback_run(run: dict) -> dict:
+    """WB-S1-025 A2：fallback 真实验证 = 退出码 + 结构/tag 完整性 + 双段非空。
+
+    事实/schema：确定性脚本自身 fail-closed（数据未过 → exit!=0 且无可投递 stdout），
+    因此 exit==0 即脚本侧事实闸已过；任何非零退出 → ok=False 并保留精确原因
+    （exit code + stderr 片段）。
+    """
+    if (run or {}).get("exit") != 0:
+        issues = [f"deterministic script exit={run.get('exit')}"]
+        err = (run.get("stderr") or "").strip()
+        if err:
+            issues.append(err[:300])
+        return {"ok": False, "issues": issues, "worklog": "", "qq": ""}
+    return _validate_fallback_text((run.get("stdout") or "").strip())
+
+
 def _job_daily_report(ctx: Any) -> dict:
     """工作台每日日报（20:00）：数据 → LLM → 工作日志 → QQ。
 
@@ -1491,74 +1581,106 @@ def _job_daily_report(ctx: Any) -> dict:
         # WB-S1-024 A1：保留完整 deterministic tagged text，到统一 _split_output
         # 位置只拆一次，不提前取 qq 丢掉 WORKLOG 段。
         render_fallback = "deterministic"
-        fallback_text = _deterministic_daily_text()
-        if not fallback_text:
+        fallback_run = _deterministic_daily_run()
+        fallback_validation = _validate_fallback_run(fallback_run)
+        fallback_text = (
+            (fallback_run.get("stdout") or "").strip()
+            if fallback_run.get("exit") == 0
+            else ""
+        )
+        if not fallback_validation["ok"]:
+            _log.error(
+                "workbench scheduler FALLBACK-INVALID exit=%s issues=%s",
+                fallback_run.get("exit"), fallback_validation.get("issues", []),
+            )
             return {
                 "generated": generated or "empty",
                 "data_validated": data_validated,
-                "input_validation": {"ok": data_validated, "issues": [] if data_validated else (data_facts or {}).get("issues", ["数据未通过事实校验"]) if isinstance(data_facts, dict) else ["数据未通过事实校验"]},
-                "factual_validation": factual if not isinstance(data_facts, dict) else {**data_facts, **factual},
-                "render_validation": render_validation,
-                "fallback_validation": {"ok": False, "issues": ["deterministic fallback produced empty output"]},
-                "delivery_validation": {"ok": False, "source": "deterministic", "issues": ["fallback empty"]},
+                "input_validation": (
+                    {"ok": False, "issues": list((data_facts or {}).get("issues", ["数据未通过事实校验"]))}
+                    if not data_validated
+                    else {"ok": True, "issues": []}
+                ),
+                "factual_validation": {"ok": False,
+                                       "issues": list(fallback_validation.get("issues", [])),
+                                       "note": "deterministic fallback invalid; not deliverable"},
+                "render_validation": {"ok": False, "issues": render_validation.get("issues", []),
+                                      "note": "deterministic fallback (render validation failed)"},
+                "fallback_validation": fallback_validation,
+                "delivery_validation": {"ok": False, "source": "deterministic", "required": False,
+                                        "status": "not_applicable",
+                                        "reason": "fallback invalid; delivery not attempted",
+                                        "issues": list(fallback_validation.get("issues", []))},
                 "render_fallback": render_fallback,
                 "worklog": "skipped-empty",
                 "delivery": "skipped-empty",
+                "queued_retry": False,
             }
         text = fallback_text
         generated = "fallback-invalid" if generated in ("invalid", "render-invalid") else "fallback"
         # render_validation 保留原始失败证据（ok=False + issues），不冒充合格
         render_validation = {"ok": False, "issues": render_validation.get("issues", []),
                              "note": "deterministic fallback (render validation failed)"}
-        # fallback_validation 只描述确定性产物自身的交付有效性
-        fallback_validation = {"ok": True, "issues": []}
     else:
         fallback_validation = None
 
     parts = _split_output(text)
     worklog_text = parts.get("worklog") or ""
-    worklog = (
-        _write_daily_worklog(worklog_text)
-        if get_write_worklog()
-        else "skipped-disabled"
-    )
     qq_message = parts.get("qq") or ""
-    health_line = _health_report_line(health_snapshot)
-    if qq_message and health_line:
-        qq_message = f"{qq_message.rstrip()}\n\n{health_line}"
-    delivery = _deliver(qq_message)
-    if delivery == "failed" and qq_message:
-        _queue_delivery(qq_message)
-    # WB-S1-024 A2：四态分离 —— input/render/fallback/delivery 各自独立留证，
-    # 失败证据不得被后续阶段覆盖或清空。
+
+    # WB-S1-025 A2：input_validation 早于 sink 守卫计算；fallback 路径必须
+    # input 事实 + fallback 验证双过，否则零 sink（不写工作日志、零 QQ 调用）。
     if isinstance(data_facts, dict) and "ok" in data_facts:
         input_validation = {"ok": bool(data_facts.get("ok")) and data_validated,
                             "issues": list(data_facts.get("issues", []))}
     else:
         input_validation = {"ok": data_validated,
                             "issues": [] if data_validated else ["数据未通过事实校验"]}
+    if render_fallback and not (input_validation["ok"] and fallback_validation["ok"]):
+        _log.error(
+            "workbench scheduler DAILY-FAIL-CLOSED input_ok=%s fallback_ok=%s issues=%s",
+            input_validation["ok"], fallback_validation["ok"], fallback_validation.get("issues", []),
+        )
+        return {
+            "generated": generated,
+            "data_validated": data_validated,
+            "input_validation": input_validation,
+            "factual_validation": {"ok": False,
+                                   "note": "deterministic fallback; input facts invalid",
+                                   "issues": list(input_validation.get("issues", []))},
+            "render_validation": render_validation,
+            "fallback_validation": fallback_validation,
+            "delivery_validation": {"ok": False, "source": "deterministic", "required": False,
+                                    "status": "not_applicable",
+                                    "reason": "input facts invalid; delivery not attempted",
+                                    "issues": list(input_validation.get("issues", []))},
+            "render_fallback": render_fallback,
+            "worklog": "skipped-empty",
+            "delivery": "skipped-empty",
+            "queued_retry": False,
+        }
+    worklog = (
+        _write_daily_worklog(worklog_text)
+        if get_write_worklog()
+        else "skipped-disabled"
+    )
+    health_line = _health_report_line(health_snapshot)
+    if qq_message and health_line:
+        qq_message = f"{qq_message.rstrip()}\n\n{health_line}"
+    delivery = _deliver(qq_message)
+    if delivery == "failed" and qq_message:
+        _queue_delivery(qq_message)
+    # WB-S1-024 A2 / WB-S1-025 A3：四态分离 —— input/render/fallback/delivery 各自
+    # 独立留证；投递语义：required 时仅 sent 为成功，其余状态（含 unknown）ok=false
+    # 并保留 exact status/reason；无需投递 → required=false，不冒充“已发送成功”。
     if render_fallback:
-        # 旧字段兼容：factual_validation 反映最终交付产物状态（fallback ok）；
-        # 但当输入事实本身失败时保留原始失败，不得翻成成功。
-        if not input_validation["ok"]:
-            # 原始数据验证事实优先：保留首次 issues，不被本地默认文案覆盖
-            factual_compat = {"ok": False,
-                              "note": "deterministic fallback; input facts invalid"}
-            if isinstance(data_facts, dict):
-                factual_compat["issues"] = list(data_facts.get("issues", factual["issues"]))
-            else:
-                factual_compat["issues"] = list(factual["issues"])
-        else:
-            factual_compat = {"ok": True, "issues": [], "note": "deterministic fallback",
-                              "render_issues": render_validation.get("issues", [])}
-        delivery_validation = {"ok": bool(fallback_validation and fallback_validation["ok"]) and delivery != "failed",
-                               "source": "deterministic",
-                               "issues": [] if delivery != "failed" else ["delivery failed; queued retry"]}
+        factual_compat = {"ok": True, "issues": [], "note": "deterministic fallback",
+                          "render_issues": render_validation.get("issues", [])}
+        source = "deterministic"
     else:
         factual_compat = {**data_facts, **factual} if isinstance(data_facts, dict) else factual
-        delivery_validation = {"ok": bool(generated == "ok") and delivery != "failed",
-                               "source": "model",
-                               "issues": [] if delivery != "failed" else ["delivery failed; queued retry"]}
+        source = "model"
+    delivery_validation = _delivery_validation(bool(qq_message), delivery, source)
     result = {
         "generated": generated,
         "data_validated": data_validated,
