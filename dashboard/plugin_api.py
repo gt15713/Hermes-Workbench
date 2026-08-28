@@ -44,10 +44,10 @@ from content_capture import (
     get_content_item as _get_reviewed_content,
 )
 from content_capture import (
-    review_content as _review_content,
+    retry_extraction as _retry_content_extraction,
 )
 from content_capture import (
-    retry_extraction as _retry_content_extraction,
+    review_content as _review_content,
 )
 from contract import (
     PARTITIONS,

@@ -7,14 +7,13 @@ CoderX §5 边界：
 """
 from pathlib import Path
 
-import pytest
-
 import content_capture as content_capture_module
+import pytest
 from content_capture import (
     capture_content,
     get_content_item,
-    review_content,
     retry_extraction,
+    review_content,
 )
 
 

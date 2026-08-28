@@ -69,14 +69,13 @@ def test_tool_registration_exposes_no_identity_arguments():
 
 def test_fallback_identity_with_empty_message_id_succeeds(wb, tmp_path):
     """Red test 1: empty message_id + trusted session_id + one persisted user row → succeeds."""
+    import plugin_api as api
     from agent_tool import (
         _resolve_state_db_message_id,
         handle_workbench_capture,
-        _STATE_DB_PATH,
     )
     from conversation_index import ConversationIndex
     from gateway.session_context import clear_session_vars, set_session_vars
-    import plugin_api as api
 
     # Create a mock state.db with one user message row
     state_db = tmp_path / "state.db"
@@ -122,10 +121,10 @@ def test_fallback_identity_with_empty_message_id_succeeds(wb, tmp_path):
 
 def test_fallback_identity_is_idempotent_on_retry(wb, tmp_path):
     """Red test 2: retrying the same persisted turn is idempotent."""
-    from agent_tool import handle_workbench_capture, _STATE_DB_PATH
+    import plugin_api as api
+    from agent_tool import handle_workbench_capture
     from conversation_index import ConversationIndex
     from gateway.session_context import clear_session_vars, set_session_vars
-    import plugin_api as api
 
     # Create mock state.db
     state_db = tmp_path / "state.db"
@@ -177,10 +176,10 @@ def test_fallback_identity_unique_per_turn(wb, tmp_path):
     First turn (row 10) succeeds and binds row 10; second turn (row 11) succeeds
     and binds the NEWEST row (11) with a DIFFERENT internal identity.
     """
-    from agent_tool import handle_workbench_capture, _STATE_DB_PATH
+    import plugin_api as api
+    from agent_tool import handle_workbench_capture
     from conversation_index import ConversationIndex
     from gateway.session_context import clear_session_vars, set_session_vars
-    import plugin_api as api
 
     state_db = tmp_path / "state.db"
     import sqlite3
@@ -237,9 +236,8 @@ def test_fallback_identity_unique_per_turn(wb, tmp_path):
 
 def test_fallback_identity_refuses_ambiguous_session(wb, tmp_path):
     """Red test 5: ambiguous rows fail closed without mutation."""
-    from agent_tool import handle_workbench_capture, _STATE_DB_PATH
+    from agent_tool import handle_workbench_capture
     from gateway.session_context import clear_session_vars, set_session_vars
-    import plugin_api as api
 
     state_db = tmp_path / "state.db"
     import sqlite3
@@ -272,9 +270,8 @@ def test_fallback_identity_refuses_ambiguous_session(wb, tmp_path):
 
 def test_fallback_non_user_rows_fail_closed(wb, tmp_path):
     """Red test 5 variant: only tool/assistant rows exist, no user row."""
-    from agent_tool import handle_workbench_capture, _STATE_DB_PATH
+    from agent_tool import handle_workbench_capture
     from gateway.session_context import clear_session_vars, set_session_vars
-    import plugin_api as api
 
     state_db = tmp_path / "state.db"
     import sqlite3
@@ -311,7 +308,7 @@ def test_fallback_identity_newest_row_used_in_multi_turn(wb, tmp_path):
     first/oldest row. Current implementation rejects any session with >1 user
     row ("多条用户消息"), so this test must FAIL before the fix.
     """
-    from agent_tool import _resolve_state_db_message_id, _STATE_DB_PATH
+    from agent_tool import _resolve_state_db_message_id
     state_db = tmp_path / "state.db"
     import sqlite3
     conn = sqlite3.connect(str(state_db))
@@ -336,7 +333,7 @@ def test_multi_turn_identities_differ_per_turn(wb, tmp_path):
     Turn 1 binds row 20; turn 2 (newer row 21) binds a different identity.
     Current implementation fails closed on the second turn (multi-row), so RED.
     """
-    from agent_tool import _resolve_state_db_message_id, _STATE_DB_PATH
+    from agent_tool import _resolve_state_db_message_id
     state_db = tmp_path / "state.db"
     import sqlite3
     conn = sqlite3.connect(str(state_db))
@@ -360,7 +357,7 @@ def test_multi_turn_identities_differ_per_turn(wb, tmp_path):
 
 def test_fallback_identity_scoped_per_session_concurrent(wb, tmp_path):
     """S1-007 RED: concurrent QQ and Weixin sessions never exchange identities."""
-    from agent_tool import _resolve_state_db_message_id, _STATE_DB_PATH
+    from agent_tool import _resolve_state_db_message_id
     state_db = tmp_path / "state.db"
     import sqlite3
     conn = sqlite3.connect(str(state_db))
@@ -388,10 +385,10 @@ def test_fallback_identity_scoped_per_session_concurrent(wb, tmp_path):
 
 def test_official_message_id_remains_preferred(wb, tmp_path):
     """Red test 6: existing official message ID is preferred over fallback."""
-    from agent_tool import handle_workbench_capture, _STATE_DB_PATH
+    import plugin_api as api
+    from agent_tool import handle_workbench_capture
     from conversation_index import ConversationIndex
     from gateway.session_context import clear_session_vars, set_session_vars
-    import plugin_api as api
 
     # Create mock state.db with a user row (should NOT be used)
     state_db = tmp_path / "state.db"
@@ -474,11 +471,11 @@ def test_real_platform_resolution_exposes_workbench_tool_to_qq_and_weixin():
 
 
 def test_mutation_without_official_message_id_fails_closed(wb, tmp_path):
-    from agent_tool import handle_workbench_capture, _STATE_DB_PATH
-    from gateway.session_context import clear_session_vars, set_session_vars
-
     # Create empty mock state.db (no rows for any session)
     import sqlite3
+
+    from agent_tool import handle_workbench_capture
+    from gateway.session_context import clear_session_vars, set_session_vars
     state_db = tmp_path / "state.db"
     conn = sqlite3.connect(str(state_db))
     conn.execute("CREATE TABLE messages (id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, content TEXT)")
@@ -527,10 +524,10 @@ def test_mutation_without_original_session_id_fails_closed(wb):
 
 
 def test_authorized_tool_creates_original_conversation_ref(wb):
+    import plugin_api as api
     from agent_tool import handle_workbench_capture
     from conversation_index import ConversationIndex
     from gateway.session_context import clear_session_vars, set_session_vars
-    import plugin_api as api
 
     tokens = set_session_vars(
         session_id="session-original",
@@ -564,10 +561,10 @@ def test_authorized_tool_creates_original_conversation_ref(wb):
 
 
 def test_index_failure_is_repaired_by_same_message_retry(wb, monkeypatch):
+    import plugin_api as api
     from agent_tool import handle_workbench_capture
     from conversation_index import ConversationIndex
     from gateway.session_context import clear_session_vars, set_session_vars
-    import plugin_api as api
 
     real_upsert = ConversationIndex.upsert_authorized
     calls = 0
@@ -605,9 +602,9 @@ def test_index_failure_is_repaired_by_same_message_retry(wb, monkeypatch):
 
 
 def test_continue_keeps_added_content_out_of_event_payloads(wb):
+    import plugin_api as api
     from agent_tool import handle_workbench_capture
     from gateway.session_context import clear_session_vars, set_session_vars
-    import plugin_api as api
 
     create_tokens = set_session_vars(
         session_id="session-create",
@@ -648,10 +645,10 @@ def test_continue_keeps_added_content_out_of_event_payloads(wb):
 
 
 def test_concurrent_agent_turns_do_not_exchange_session_identity(wb):
+    import plugin_api as api
     from agent_tool import handle_workbench_capture
     from conversation_index import ConversationIndex
     from gateway.session_context import clear_session_vars, set_session_vars
-    import plugin_api as api
 
     async def capture(platform, message_id, session_id, content, delay):
         tokens = set_session_vars(

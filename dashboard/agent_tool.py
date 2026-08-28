@@ -7,7 +7,6 @@ import re
 import sqlite3
 from pathlib import Path
 
-
 _SCHEMA = {
     "name": "workbench_capture",
     "description": (

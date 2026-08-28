@@ -511,7 +511,7 @@ def _reconcile_stale_states() -> None:
     state = _load_state()
     now = datetime.now().isoformat(timespec="seconds")
     changed = False
-    for job_key, js in (state.get("job_states") or {}).items():
+    for _job_key, js in (state.get("job_states") or {}).items():
         if js.get("phase") not in _NONTERMINAL_PHASES:
             continue
         js["phase"] = PHASE_INTERRUPTED

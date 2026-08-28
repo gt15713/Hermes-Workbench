@@ -14,13 +14,11 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
-from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import pytest  # noqa: E402
-
 import scheduler  # noqa: E402
 
 PHASES = (

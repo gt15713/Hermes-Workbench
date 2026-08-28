@@ -299,6 +299,11 @@ class TestStructuredDailyOutput:
         assert "推进视频分类" in wl
         assert "今日推进 2 项" in wl  # deterministic judgement derived from counts
         assert "待处理 2 项" in wl
+        assert "📋 Workbench 日报 · 08.26 周三" in qq
+        assert "✅ 今日推进" in qq and "推进视频分类" in qq
+        assert "⏳ 待处理" in qq and "推进视频分类" in qq.split("⏳")[1]
+        assert "📊 本周完成" in qq and "周完成项A" in qq
+        assert "周完成项B" not in qq  # model selected only W1; W2 must not leak in
 
     def test_2_unknown_duplicate_wrong_category_ids_fallback(self):
         """Unknown/duplicate/wrong-category IDs are rejected."""
@@ -500,7 +505,8 @@ class TestTitleNormalization:
     """URL/文件名残片等不可读标题 → 可读标题（确定性规则）。"""
 
     def _normalize(self, title):
-        import subprocess, sys, os
+        import subprocess
+        import sys
         code = (
             "import sys; sys.path.insert(0, r'{SCRIPTS}'); "
             "import workbench_daily_report as w; "
@@ -539,7 +545,9 @@ class TestTitleNormalization:
 
     def test_list_items_aliases_pass_through_normalization(self):
         """list_items 输出经 normalize_title：日期前缀与传输后缀在展示前剥离。"""
-        import subprocess, sys, os
+        import os
+        import subprocess
+        import sys
         env = dict(os.environ)
         env["WORKBENCH_ROOT"] = str(os.path.dirname(SCRIPTS))
         env["WORKBENCH_DB"] = str(SCRIPTS)
