@@ -287,8 +287,8 @@ class TestDeliveryRetry:
         assert scheduler._retry_pending_delivery() is True
         assert scheduler._load_state()["pending_delivery"] is None
 
-    def test_retry_success_resolves_delivery_error(self, monkeypatch, tmp_path):
-        """A delivered retry must not leave health permanently red."""
+    def test_legacy_retry_success_stays_visible_until_identity_is_known(self, monkeypatch, tmp_path):
+        """A legacy retry may send, but cannot erase an unattributed health error."""
         monkeypatch.setattr(scheduler, "_STATE_FILE", tmp_path / "state.json")
         monkeypatch.setattr(scheduler, "_deliver", lambda t: "sent")
         scheduler._queue_delivery("消息")
@@ -306,7 +306,9 @@ class TestDeliveryRetry:
 
         assert scheduler._retry_pending_delivery() is True
         resolved = scheduler._load_state()
-        assert resolved["errors"] == {"count": 0, "last": None}
+        assert resolved["errors"]["count"] == 1
+        assert resolved["errors"]["last"]["reason"] == "delivery:legacy-sent-unresolved"
+        assert resolved["legacy_delivery_unresolved"]["job_key"] == "daily_report"
 
     def test_retry_drops_after_max(self, monkeypatch, tmp_path):
         monkeypatch.setattr(scheduler, "_STATE_FILE", tmp_path / "state.json")
@@ -345,7 +347,7 @@ class TestP0CVisibility:
         assert scheduler._result_health({"scanned": 0, "errors": 0}) == (True, "")
         assert scheduler._result_health({"exit": 0}) == (True, "")
 
-    def test_legacy_delivery_failure_without_pending_retry_is_not_active(self):
+    def test_legacy_delivery_failure_without_pending_retry_remains_active(self):
         state = {
             "pending_delivery": None,
             "errors": {
@@ -353,7 +355,7 @@ class TestP0CVisibility:
                 "last": {"job": "daily_report", "reason": "delivery:failed"},
             },
         }
-        assert scheduler._active_errors(state) == (0, None)
+        assert scheduler._active_errors(state) == (1, state["errors"]["last"])
 
     def test_exhausted_delivery_remains_active(self):
         state = {
@@ -385,8 +387,8 @@ class TestP0CVisibility:
         assert state["errors"]["count"] == 2
         assert state["errors"]["last"]["job"] == "nudge"
         status = scheduler.scheduler_status()
-        assert status["error_count"] == 1
-        assert status["last_error"] is None
+        assert status["error_count"] == 2
+        assert status["last_error"]["job"] == "nudge"
 
 
 class TestCatchUp:

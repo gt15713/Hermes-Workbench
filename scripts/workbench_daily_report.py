@@ -295,44 +295,85 @@ def collect(data_date: str | None = None) -> dict:
 
 
 def validate_report_data(d: dict) -> dict:
-    """P0-4（B5）+ D2（P2-2）：输出契约 schema 校验 + 事实校验。
+    """Validate the stable report schema and factual content independently."""
+    schema_issues: list[str] = []
+    fact_issues: list[str] = []
+    if not isinstance(d, dict):
+        return {
+            "schema_ok": False,
+            "facts_ok": False,
+            "schema_issues": ["report not dict"],
+            "fact_issues": [],
+            "issues": ["report not dict"],
+        }
 
-    Returns {"schema_ok": bool, "facts_ok": bool, "issues": [str]}.
-    """
+    if not isinstance(d.get("today"), str):
+        schema_issues.append("today missing or not str")
+    if not isinstance(d.get("is_sunday"), bool):
+        schema_issues.append("is_sunday missing or not bool")
+
+    processed = d.get("processed")
+    if not isinstance(processed, list) or not all(isinstance(item, str) for item in processed):
+        schema_issues.append("processed not list[str]")
+        processed = []
+
+    pending = d.get("pending")
+    if not isinstance(pending, list):
+        schema_issues.append("pending not list[dict]")
+        pending = []
+    else:
+        for index, item in enumerate(pending):
+            if not isinstance(item, dict):
+                schema_issues.append(f"pending[{index}] not dict")
+                continue
+            if not isinstance(item.get("title"), str) or not isinstance(item.get("label"), str):
+                schema_issues.append(f"pending[{index}] missing title/label")
+
     week = d.get("week")
-    schema_ok = (
-        isinstance(d, dict)
-        and isinstance(d.get("today"), str)
-        and isinstance(d.get("is_sunday"), bool)
-        and isinstance(d.get("processed"), list)
-        and isinstance(d.get("pending"), list)
-        and isinstance(week, dict)
-        and isinstance(week.get("monday"), str)
-        and isinstance(week.get("completed_count"), int)
-        and isinstance(week.get("completed"), list)
-        and isinstance(week.get("new_count"), int)
-        and isinstance(week.get("remaining_count"), int)
-        and isinstance(week.get("due_next_week"), int)
-        and isinstance(week.get("blocked_count"), int)
-    )
-    issues: list[str] = []
-    for item in d.get("pending", []):
-        if not isinstance(item, dict):
-            issues.append("pending 项不是对象")
+    if not isinstance(week, dict):
+        schema_issues.append("week not dict")
+        week = {}
+    else:
+        if not isinstance(week.get("monday"), str):
+            schema_issues.append("week.monday missing or not str")
+        completed = week.get("completed")
+        if not isinstance(completed, list) or not all(isinstance(item, str) for item in completed):
+            schema_issues.append("week.completed not list[str]")
+        for field in (
+            "completed_count",
+            "new_count",
+            "remaining_count",
+            "due_next_week",
+            "blocked_count",
+        ):
+            if type(week.get(field)) is not int:
+                schema_issues.append(f"week.{field} not int")
+
+    for item in pending:
+        if not isinstance(item, dict) or not isinstance(item.get("title"), str):
             continue
-        title = str(item.get("title") or "")
+        title = item["title"]
         if _DATE_TITLE.match(title):
-            issues.append(f"pending 含日期文件名伪条目: {title}")
+            fact_issues.append(f"pending 含日期文件名伪条目: {title}")
         if _CATEGORY_HEADING.match(title):
-            issues.append(f"pending 含分类标题伪条目: {title}")
-    for title in d.get("processed", []):
-        if _CATEGORY_HEADING.match(str(title)):
-            issues.append(f"processed 含分类标题伪条目: {title}")
-    if isinstance(week, dict):
-        for title in week.get("completed", []):
-            if _CATEGORY_HEADING.match(str(title)):
-                issues.append(f"week.completed 含分类标题伪条目: {title}")
-    return {"schema_ok": schema_ok, "facts_ok": not issues, "issues": issues}
+            fact_issues.append(f"pending 含分类标题伪条目: {title}")
+    for title in processed:
+        if _CATEGORY_HEADING.match(title):
+            fact_issues.append(f"processed 含分类标题伪条目: {title}")
+    completed = week.get("completed")
+    if isinstance(completed, list):
+        for title in completed:
+            if isinstance(title, str) and _CATEGORY_HEADING.match(title):
+                fact_issues.append(f"week.completed 含分类标题伪条目: {title}")
+
+    issues = [*schema_issues, *fact_issues]
+    return {
+        "schema_ok": not schema_issues,
+        "facts_ok": not fact_issues,
+        "schema_issues": schema_issues,
+        "fact_issues": fact_issues,
+        "issues": issues,
+    }
 
 
 def main() -> int:
@@ -349,7 +390,6 @@ def main() -> int:
     args = ap.parse_args()
 
     data = collect(args.date)
-    today_s = str(data["today"])
     validation = validate_report_data(data)
     if not validation["schema_ok"] or not validation["facts_ok"]:
         # WB-S1-025 fail-closed：事实/schema 未过 → 非零退出、无可投递 stdout、
@@ -360,6 +400,8 @@ def main() -> int:
                     "error": "daily_report_data_invalid",
                     "schema_ok": validation["schema_ok"],
                     "facts_ok": validation["facts_ok"],
+                    "schema_issues": validation["schema_issues"],
+                    "fact_issues": validation["fact_issues"],
                     "issues": validation["issues"],
                 },
                 ensure_ascii=False,
@@ -367,6 +409,7 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+    today_s = str(data["today"])
     if args.data:
         data["data_validated"] = validation["schema_ok"] and validation["facts_ok"]
         data["factual_validation"] = {

@@ -26,6 +26,8 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
+import hashlib
 import json
 import logging
 import os
@@ -57,6 +59,11 @@ _SCRIPT_TIMEOUT = 600       # 维护子进程上限
 _SEND_TIMEOUT = 120         # QQ 投递子进程上限
 _DELIVERY_RETRY_MAX = 3     # 投递失败重试上限
 _DELIVERY_RETRY_MINUTES = 5  # 失败后重试间隔（分钟）
+_PENDING_DELIVERY_SCHEMA_VERSION = 2
+_DELIVERY_CONTEXT: contextvars.ContextVar[dict | None] = contextvars.ContextVar(
+    "workbench_delivery_context", default=None
+)
+_DELIVERY_SUCCESS_CACHE: set[str] = set()
 
 # 任务生命周期阶段（WB-S1-011：last_runs 只在 completed 时更新，不把尝试当完成）
 PHASE_SCHEDULED = "scheduled"
@@ -280,42 +287,63 @@ class _Lease:
 # ---------------------------------------------------------------------------
 
 
-def _load_state() -> dict:
-    try:
-        data = json.loads(_STATE_FILE.read_text(encoding="utf-8"))
-        if isinstance(data, dict) and isinstance(data.get("last_runs"), dict):
-            # WB-S1-011：惰性补全 v2 字段；历史迁移见 _migrate_state_file
-            data.setdefault("job_states", {})
-            data.setdefault("schema_version", 2)
-            return data
-    except (OSError, ValueError, json.JSONDecodeError):
-        pass
+def _default_state(error_reason: str | None = None) -> dict:
+    last_error = None
+    error_count = 0
+    if error_reason:
+        error_count = 1
+        last_error = {
+            "job": "scheduler_state",
+            "at": datetime.now().isoformat(timespec="seconds"),
+            "reason": error_reason,
+        }
     return {
         "last_runs": {},
         "job_states": {},
         "pending_delivery": None,
-        "errors": {"count": 0, "last": None},
+        "errors": {"count": error_count, "last": last_error},
         "updated_at": None,
         "schema_version": 2,
     }
 
 
-def _save_state(state: dict) -> None:
+def _load_state() -> dict:
+    try:
+        raw = _STATE_FILE.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return _default_state()
+    except OSError:
+        return _default_state("state:corrupt-or-unreadable")
+    try:
+        data = json.loads(raw)
+    except (ValueError, json.JSONDecodeError):
+        return _default_state("state:corrupt-or-unreadable")
+    if isinstance(data, dict) and isinstance(data.get("last_runs"), dict):
+        # WB-S1-011：惰性补全 v2 字段；历史迁移见 _migrate_state_file
+        data.setdefault("job_states", {})
+        data.setdefault("schema_version", 2)
+        return data
+    return _default_state("state:corrupt-or-unreadable")
+
+
+def _save_state(state: dict) -> bool:
     state["updated_at"] = datetime.now().isoformat(timespec="seconds")
     state.setdefault("job_states", {})
     state.setdefault("schema_version", 2)
     # 原子写：同目录临时文件 + os.replace（Windows 上避免读者读到半写内容/文件锁）；
-    # 写失败 fail-closed：保留磁盘旧内容，不抛给调用方。
+    # 写失败 fail-closed：保留磁盘旧内容，并让需要提交语义的调用方得知失败。
     tmp = _STATE_FILE.with_suffix(".json.tmp")
     try:
         tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(tmp, _STATE_FILE)
+        return True
     except OSError as exc:
         _log.warning("workbench scheduler state write failed: %s", exc)
         try:
             tmp.unlink(missing_ok=True)
         except OSError:
             pass
+        return False
 
 
 def _append_log(job_key: str, started_at: str, ok: bool, summary: Any) -> None:
@@ -338,14 +366,28 @@ def _append_log(job_key: str, started_at: str, ok: bool, summary: Any) -> None:
 
 
 def _result_health(result: Any) -> tuple[bool, str]:
-    """任务结果健康判定（P0-C 可见性）：empty/投递失败/未配置/执行错误/脚本退出非 0 → 非 ok。"""
+    """Return health consistent with the structured delivery contract."""
     if not isinstance(result, dict):
         return True, ""
     if result.get("generated") == "empty":
         return False, "empty"
-    delivery = result.get("delivery")
-    if delivery in ("failed", "unconfigured"):
-        return False, f"delivery:{delivery}"
+    delivery_validation = result.get("delivery_validation")
+    if delivery_validation is not None or ("worklog" in result and "delivery" in result):
+        if not isinstance(delivery_validation, dict):
+            return False, "delivery_validation:missing"
+        required = delivery_validation.get("required")
+        status = delivery_validation.get("status")
+        validation_ok = delivery_validation.get("ok") is True
+        if required is True:
+            if not (status == "sent" and validation_ok and result.get("delivery") == "sent"):
+                return False, f"delivery:{status or 'unknown'}"
+        elif required is False:
+            if not (status == "not_applicable" and validation_ok):
+                return False, f"delivery:{status or 'invalid-not-applicable'}"
+        else:
+            return False, "delivery_validation:required-not-bool"
+    elif result.get("delivery") in ("failed", "unconfigured", "error-no-hermes"):
+        return False, f"delivery:{result.get('delivery')}"
     if int(result.get("errors", 0) or 0) > 0:
         return False, f"errors:{result.get('errors')}"
     if result.get("exit") not in (None, 0):
@@ -353,52 +395,83 @@ def _result_health(result: Any) -> tuple[bool, str]:
     return True, ""
 
 
-def _record_error(job_key: str, started_at: str, reason: str) -> None:
-    """累计错误计数 + 最近一次错误（P0-C：scheduler_status 可见，失败不再静默）。"""
+def _error_identity(job_key: str, attempt_key: str, started_at: str, reason: str) -> str:
+    raw = "\x1f".join((job_key, attempt_key, started_at, reason))
+    return "sha256:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _record_error(
+    job_key: str,
+    started_at: str,
+    reason: str,
+    attempt_key: str | None = None,
+) -> None:
+    """Record an actionable error with stable attempt identity when available."""
     state = _load_state()
     errors = state.setdefault("errors", {"count": 0, "last": None})
+    item = {"job": job_key, "at": started_at, "reason": reason}
+    if attempt_key:
+        item["attempt_key"] = attempt_key
+        item["id"] = _error_identity(job_key, attempt_key, started_at, reason)
+        unresolved = errors.setdefault("unresolved", [])
+        existing = next(
+            (
+                entry
+                for entry in unresolved
+                if isinstance(entry, dict) and entry.get("id") == item["id"]
+            ),
+            None,
+        )
+        if existing is not None:
+            errors["last"] = existing
+            _save_state(state)
+            return
+        unresolved.append(item)
     errors["count"] = int(errors.get("count", 0)) + 1
-    errors["last"] = {"job": job_key, "at": started_at, "reason": reason}
+    errors["last"] = item
     _save_state(state)
 
 
-def _resolve_last_delivery_error(state: dict) -> None:
-    """Clear the actionable health error once its queued delivery succeeds.
-
-    ``errors.count`` predates per-attempt delivery retries and is surfaced by
-    ``/health`` as a current fault count. Leaving the failed first attempt in
-    place after a successful retry makes the UI permanently red even though
-    ``pending_delivery`` is empty and the delivery chain recovered.
-    """
+def _resolve_delivery_error(state: dict, error_id: str) -> bool:
+    """Resolve exactly one identity-bound delivery error, never a neighbour."""
+    if not error_id:
+        return False
     errors = state.get("errors") or {}
-    last = errors.get("last") or {}
-    if last.get("reason") != "delivery:failed":
-        return
+    unresolved = [entry for entry in errors.get("unresolved", []) if isinstance(entry, dict)]
+    matched = [entry for entry in unresolved if entry.get("id") == error_id]
+    if matched:
+        unresolved = [entry for entry in unresolved if entry.get("id") != error_id]
+    else:
+        last = errors.get("last") or {}
+        if last.get("id") != error_id:
+            return False
     remaining = max(0, int(errors.get("count", 0)) - 1)
     errors["count"] = remaining
+    errors["unresolved"] = unresolved
     if remaining == 0:
         errors["last"] = None
+    elif unresolved:
+        errors["last"] = unresolved[-1]
+    elif (errors.get("last") or {}).get("id") == error_id:
+        errors["last"] = {
+            "job": "scheduler",
+            "reason": "legacy:unresolved-errors",
+            "at": datetime.now().isoformat(timespec="seconds"),
+        }
     state["errors"] = errors
+    return True
 
 
 def _active_errors(state: dict) -> tuple[int, dict | None]:
-    """Return unresolved health errors, excluding recovered legacy delivery state.
+    """Return unresolved health errors without inferring recovery from queue shape.
 
-    Older schedulers cleared ``pending_delivery`` after a successful retry but
-    left ``delivery:failed`` in the cumulative counter.  An exhausted retry is
-    now recorded as ``delivery:dropped`` so it remains visible.
+    ``pending_delivery`` being absent is ambiguous: the message may never have
+    been queued, the queue may have rejected it, retries may have been dropped,
+    or legacy/corrupt state may have lost its identity.  Only the explicit,
+    identity-bound recovery path may decrement an error.
     """
     errors = state.get("errors") or {}
-    count = int(errors.get("count", 0) or 0)
-    last = errors.get("last")
-    if (
-        count > 0
-        and isinstance(last, dict)
-        and last.get("reason") == "delivery:failed"
-        and not state.get("pending_delivery")
-    ):
-        return max(0, count - 1), None
-    return count, last
+    return int(errors.get("count", 0) or 0), errors.get("last")
 
 
 # ---------------------------------------------------------------------------
@@ -451,47 +524,51 @@ def _set_phase(
     _save_state(state)
 
 
-def _daily_contract(worklog: str, delivery: str) -> tuple[str, str | None]:
-    """daily_report 契约判定：artifact + 必要投递均满足 → completed。
+def _daily_contract(result: dict) -> tuple[str, str | None]:
+    """Derive daily lifecycle solely from artifact and delivery_validation evidence."""
+    worklog = str(result.get("worklog") or "")
+    artifact_ok = worklog in (
+        "written",
+        "skipped-exists",
+        "skipped-disabled",
+        "skipped-unconfigured",
+    )
+    delivery_validation = result.get("delivery_validation")
+    if not isinstance(delivery_validation, dict):
+        return PHASE_FAILED, "delivery_validation missing or not dict"
 
-    - delivery=sent 且 artifact 满足 → delivery_sent（调用方随后转 completed，
-      中间态时间戳保留在 job_states）；
-    - artifact 满足但 delivery=failed → artifact_written（等投递重试队列，不是完成）；
-    - 投递不必要（unconfigured/skipped-empty）且 artifact 满足 → completed；
-    - 任何 artifact 缺失或异常组合 → failed（不伪造完成、不把尝试当 sent）。
-    """
-    artifact_ok = worklog in ("written", "skipped-exists", "skipped-disabled", "skipped-unconfigured")
-    if delivery == "sent":
-        if artifact_ok:
-            return PHASE_DELIVERY_SENT, None
-        return PHASE_FAILED, f"delivery sent but artifact missing (worklog={worklog})"
-    if delivery == "failed":
-        if artifact_ok:
-            return PHASE_ARTIFACT_WRITTEN, "delivery:failed"
-        return PHASE_FAILED, f"delivery:failed and artifact missing (worklog={worklog})"
-    if delivery in ("unconfigured", "skipped-empty"):
-        if artifact_ok:
-            return PHASE_COMPLETED, None
-        return PHASE_FAILED, f"no delivery and artifact missing (worklog={worklog})"
-    return PHASE_FAILED, f"unexpected delivery={delivery!r}"
+    required = delivery_validation.get("required")
+    status = delivery_validation.get("status")
+    validation_ok = delivery_validation.get("ok") is True
+    if required is True:
+        if status == "sent" and validation_ok and result.get("delivery") == "sent":
+            if artifact_ok:
+                return PHASE_DELIVERY_SENT, None
+            return PHASE_FAILED, f"delivery sent but artifact missing (worklog={worklog})"
+        if status in {"failed", "error-no-hermes"} and result.get("queued_retry") is True:
+            if artifact_ok:
+                return PHASE_ARTIFACT_WRITTEN, f"delivery:{status}; queued for retry"
+            return PHASE_FAILED, f"delivery:{status} queued but artifact missing (worklog={worklog})"
+        return PHASE_FAILED, f"required delivery not sent: status={status!r}"
+    if required is False:
+        if status == "not_applicable" and validation_ok:
+            if artifact_ok:
+                return PHASE_COMPLETED, None
+            return PHASE_FAILED, f"artifact missing for not_applicable delivery (worklog={worklog})"
+        return PHASE_FAILED, f"invalid non-required delivery contract: status={status!r}"
+    return PHASE_FAILED, "delivery_validation.required not bool"
 
 
 def _derive_phase(job_key: str, result: dict, ok: bool, reason: str) -> tuple[str, str | None]:
-    """runner 结果 → 生命周期阶段（daily_report 走契约；其他 job 简化 ok/failed）。
-
-    分层规则（不互相掩盖）：
-    - artifact 已写但投递失败 → artifact_written（即使 _result_health 判非 ok）；
-    - 其余非 ok（empty/errors/exit）→ failed；
-    - daily_report 契约判定失败 → failed。
-    """
+    """runner 结果 → 生命周期阶段（daily_report 走结构化 delivery contract）。"""
     if not isinstance(result, dict):
         return PHASE_FAILED, "runner returned non-dict result"
     if job_key == "daily_report":
-        phase, err = _daily_contract(str(result.get("worklog") or ""), str(result.get("delivery") or ""))
+        phase, err = _daily_contract(result)
         if phase in (PHASE_FAILED, PHASE_ARTIFACT_WRITTEN):
             return phase, err
         if not ok:
-            return PHASE_FAILED, reason or "failed"
+            return PHASE_FAILED, reason or "delivery contract unhealthy"
         return phase, err
     if not ok:
         return PHASE_FAILED, reason or "failed"
@@ -651,48 +728,202 @@ def _parse_run_key(key: str) -> datetime | None:
         return None
 
 
-def _queue_delivery(text: str) -> None:
-    """把失败的投递加入重试队列（scheduler-state.json，最多 3 次）。"""
+def _message_identity(text: str) -> str:
+    return "sha256:" + hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _queue_delivery(
+    text: str,
+    *,
+    job_key: str | None = None,
+    attempt_key: str | None = None,
+    error_id: str | None = None,
+) -> bool:
+    """Queue one retryable message without replacing or duplicating evidence."""
+    normalized = (text or "").strip()[:4000]
+    if not normalized:
+        return False
+    context = _DELIVERY_CONTEXT.get() or {}
+    job_key = job_key or context.get("job_key")
+    attempt_key = attempt_key or context.get("attempt_key")
+    error_id = error_id or context.get("error_id")
+    message_id = _message_identity(normalized)
     state = _load_state()
-    state["pending_delivery"] = {
-        "text": (text or "").strip()[:4000],
+    pending = state.get("pending_delivery")
+    if isinstance(pending, dict) and pending.get("text"):
+        same_identity = (
+            pending.get("message_id") in (None, message_id)
+            and pending.get("text") == normalized
+            and pending.get("job_key") == job_key
+            and pending.get("attempt_key") == attempt_key
+        )
+        if same_identity:
+            return True
+        _log.error("workbench scheduler: retry queue occupied; preserving existing message")
+        return False
+    queued = {
+        "schema_version": _PENDING_DELIVERY_SCHEMA_VERSION,
+        "job_key": job_key,
+        "attempt_key": attempt_key,
+        "message_id": message_id,
+        "error_id": error_id,
+        "text": normalized,
         "attempts": 0,
         "next_attempt_at": (
             datetime.now() + timedelta(minutes=_DELIVERY_RETRY_MINUTES)
         ).isoformat(timespec="seconds"),
     }
-    _save_state(state)
+    if not all((job_key, attempt_key, error_id)):
+        queued["legacy_unresolved"] = True
+    state["pending_delivery"] = queued
+    if not _save_state(state):
+        return False
     _log.warning("workbench scheduler: delivery queued for retry")
+    return True
+
+
+def _pending_completion_key(pending: dict) -> str:
+    return "|".join(
+        str(pending.get(key) or "")
+        for key in ("job_key", "attempt_key", "message_id", "error_id")
+    )
+
+
+def _identity_bound_pending(pending: dict) -> bool:
+    return (
+        pending.get("schema_version") == _PENDING_DELIVERY_SCHEMA_VERSION
+        and all(
+            isinstance(pending.get(key), str) and pending.get(key)
+            for key in ("job_key", "attempt_key", "message_id", "error_id")
+        )
+        and pending.get("message_id") == _message_identity(str(pending.get("text") or ""))
+    )
+
+
+def _complete_retried_attempt(state: dict, pending: dict, completed_at: str) -> bool:
+    job_key = pending["job_key"]
+    attempt_key = pending["attempt_key"]
+    job_state = (state.get("job_states") or {}).get(job_key)
+    if not isinstance(job_state, dict) or job_state.get("attempt_key") != attempt_key:
+        return False
+    if job_state.get("phase") == PHASE_COMPLETED:
+        return (state.get("last_runs") or {}).get(job_key) == attempt_key
+    if job_state.get("phase") not in {PHASE_ARTIFACT_WRITTEN, PHASE_DELIVERY_SENT}:
+        return False
+    if not _resolve_delivery_error(state, pending["error_id"]):
+        return False
+    job_state["phase"] = PHASE_COMPLETED
+    job_state.setdefault("delivery_sent_at", completed_at)
+    job_state.setdefault("completed_at", completed_at)
+    job_state["last_error"] = None
+    state.setdefault("job_states", {})[job_key] = job_state
+    state.setdefault("last_runs", {})[job_key] = attempt_key
+    state["pending_delivery"] = None
+    return True
+
+
+def _record_legacy_delivery_success(state: dict, pending: dict, sent_at: str) -> None:
+    """Keep legacy success visible without guessing an attempt completion."""
+    errors = state.setdefault("errors", {"count": 0, "last": None})
+    evidence = {
+        "message_id": pending.get("message_id") or _message_identity(pending["text"]),
+        "sent_at": sent_at,
+        "attempts": int(pending.get("attempts", 0)) + 1,
+        "reason": "delivery:legacy-sent-unresolved",
+    }
+    last_error = errors.get("last") or {}
+    if last_error.get("job"):
+        evidence["job_key"] = last_error["job"]
+    state["legacy_delivery_unresolved"] = evidence
+    errors["last"] = {
+        "job": evidence.get("job_key", "delivery"),
+        "at": sent_at,
+        "reason": "delivery:legacy-sent-unresolved",
+    }
+    errors["count"] = max(1, int(errors.get("count", 0) or 0))
+    state["errors"] = errors
+    state["pending_delivery"] = None
 
 
 def _retry_pending_delivery() -> bool:
-    """重试队列投递；成功/达到上限 → 清队列。返回是否成功。"""
+    """Retry one pending delivery and commit lifecycle recovery fail-closed."""
     state = _load_state()
     pending = state.get("pending_delivery")
-    if not pending or not pending.get("text"):
+    if not isinstance(pending, dict) or not pending.get("text"):
         return False
     try:
         due = datetime.fromisoformat(pending["next_attempt_at"])
-    except (ValueError, TypeError):
+    except (KeyError, ValueError, TypeError):
         due = datetime.min
     if datetime.now() < due:
         return False
     attempts = int(pending.get("attempts", 0)) + 1
-    result = _deliver(pending["text"])
+    identity_bound = _identity_bound_pending(pending)
+    completion_key = _pending_completion_key(pending)
+
+    if identity_bound:
+        job_state = (state.get("job_states") or {}).get(pending["job_key"])
+        if not isinstance(job_state, dict) or job_state.get("attempt_key") != pending["attempt_key"]:
+            pending["unresolved_reason"] = "delivery:identity-conflict"
+            state["pending_delivery"] = pending
+            _save_state(state)
+            return False
+        if job_state.get("phase") == PHASE_COMPLETED:
+            errors = state.get("errors") or {}
+            if int(errors.get("count", 0) or 0) > 0 and not _resolve_delivery_error(
+                state, pending["error_id"]
+            ):
+                pending["unresolved_reason"] = "delivery:error-identity-mismatch"
+                state["pending_delivery"] = pending
+                _save_state(state)
+                return False
+            state["pending_delivery"] = None
+            return _save_state(state)
+
+    if completion_key not in _DELIVERY_SUCCESS_CACHE:
+        result = _deliver(pending["text"])
+        if result == "sent":
+            _DELIVERY_SUCCESS_CACHE.add(completion_key)
+    else:
+        result = "sent"
+
     if result == "sent":
-        state["pending_delivery"] = None
-        _resolve_last_delivery_error(state)
-        _save_state(state)
+        sent_at = datetime.now().isoformat(timespec="seconds")
+        if identity_bound:
+            if not _complete_retried_attempt(state, pending, sent_at):
+                pending["unresolved_reason"] = "delivery:identity-unresolved"
+                state["pending_delivery"] = pending
+                _save_state(state)
+                return False
+        else:
+            _record_legacy_delivery_success(state, pending, sent_at)
+        if not _save_state(state):
+            return False
+        _DELIVERY_SUCCESS_CACHE.discard(completion_key)
         _log.info("workbench scheduler: queued delivery sent (attempt %s)", attempts)
         return True
+
     if attempts >= _DELIVERY_RETRY_MAX:
+        state.setdefault("dropped_deliveries", []).append(
+            {
+                key: pending.get(key)
+                for key in ("schema_version", "job_key", "attempt_key", "message_id", "error_id")
+            }
+            | {"attempts": attempts, "dropped_at": datetime.now().isoformat(timespec="seconds")}
+        )
         state["pending_delivery"] = None
         errors = state.get("errors") or {}
         last = errors.get("last") or {}
-        if last.get("reason") == "delivery:failed":
+        if last.get("id") in (None, pending.get("error_id")) and last.get("reason") in {
+            "delivery:failed",
+            "delivery:error-no-hermes",
+        }:
             last["reason"] = "delivery:dropped"
             errors["last"] = last
             state["errors"] = errors
+        job_state = (state.get("job_states") or {}).get(pending.get("job_key"))
+        if isinstance(job_state, dict) and job_state.get("attempt_key") == pending.get("attempt_key"):
+            job_state["last_error"] = "delivery:dropped"
         _save_state(state)
         _log.error("workbench scheduler: queued delivery dropped after %s attempts", attempts)
         return False
@@ -838,24 +1069,56 @@ def _deliver(text: str) -> str:
     return "failed"
 
 
-_WORKLOG_RE = re.compile(r"<WORKLOG>(.*?)</WORKLOG>", re.S)
-_QQ_RE = re.compile(r"<QQMSG>(.*?)</QQMSG>", re.S)
+_TAGGED_OUTPUT_RE = re.compile(
+    r"\A\s*<WORKLOG>(?P<worklog>.*?)</WORKLOG>\s*"
+    r"<QQMSG>(?P<qq>.*?)</QQMSG>\s*\Z",
+    re.S,
+)
+_TAG_TOKENS = ("<WORKLOG>", "</WORKLOG>", "<QQMSG>", "</QQMSG>")
 
 
-def _split_output(text: str) -> dict:
-    """解析 LLM 输出：<WORKLOG>/<QQMSG> 两段；无标记 → 全文当 QQ，含日报标题则当工作日志。"""
-    if not text:
+def _parse_output(text: str, *, strict: bool) -> dict:
+    """Single parser for strict fallback and explicit loose model compatibility."""
+    text = text or ""
+    tag_counts_valid = all(text.count(token) == 1 for token in _TAG_TOKENS)
+    match = _TAGGED_OUTPUT_RE.fullmatch(text) if tag_counts_valid else None
+    if match:
+        worklog = match.group("worklog").strip()
+        qq = match.group("qq").strip()
+        issues = []
+        if not worklog:
+            issues.append("WORKLOG section empty or missing")
+        if not qq:
+            issues.append("QQMSG section empty or missing")
+        parsed = {"ok": not issues, "issues": issues, "worklog": worklog, "qq": qq}
+        if strict:
+            return parsed
+        return {"worklog": worklog, "qq": qq} if not issues else {"worklog": "", "qq": ""}
+
+    if strict:
+        issues = []
+        if not text.strip():
+            issues.append("deterministic fallback produced empty output")
+        if text.count("<WORKLOG>") != 1 or text.count("</WORKLOG>") != 1:
+            issues.append("fallback output requires exactly one complete <WORKLOG> section")
+        if text.count("<QQMSG>") != 1 or text.count("</QQMSG>") != 1:
+            issues.append("fallback output requires exactly one complete <QQMSG> section")
+        if text.strip() and not issues:
+            issues.append("fallback output must be WORKLOG then QQMSG with whitespace only outside")
+        elif text.strip() and not match:
+            issues.append("fallback output tag order/nesting/outer text invalid")
+        return {"ok": False, "issues": issues, "worklog": "", "qq": ""}
+
+    if any(token in text for token in _TAG_TOKENS):
         return {"worklog": "", "qq": ""}
-    wm = _WORKLOG_RE.search(text)
-    qm = _QQ_RE.search(text)
-    if wm or qm:
-        return {
-            "worklog": (wm.group(1) if wm else "").strip(),
-            "qq": (qm.group(1) if qm else "").strip(),
-        }
     if text.startswith("# 工作台日报") or "## 今日完成" in text:
         return {"worklog": text, "qq": text}
     return {"worklog": "", "qq": text}
+
+
+def _split_output(text: str, *, strict: bool = False) -> dict:
+    """Parse output; strict mode is mandatory for deterministic fallback."""
+    return _parse_output(text, strict=strict)
 
 
 def _write_daily_worklog(text: str, vault: Optional[Path] = None) -> str:
@@ -1421,22 +1684,6 @@ def _render_qqmsg(records: dict, parsed: dict, today: str, data: dict | None = N
     return "\n".join(lines)
 
 
-def _deterministic_daily_text() -> str:
-    """确定性回退：脚本无参模式（模板输出），不依赖 LLM。"""
-    try:
-        r = _run_script(
-            "workbench_daily_report.py",
-            [],
-            timeout=120,
-            env=_script_env(),
-        )
-        if r["exit"] == 0:
-            return (r["stdout"] or "").strip()
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-    return ""
-
-
 _DELIVERY_STATUS_REASONS = {
     "failed": "delivery failed; requires retry",
     "unconfigured": "deliver target unconfigured",
@@ -1455,7 +1702,7 @@ def _delivery_validation(required: bool, delivery: str, source: str) -> dict:
       status=not_applicable 语义，绝不冒充“已发送成功”。
     """
     if not required:
-        return {"ok": False, "required": False, "status": "not_applicable",
+        return {"ok": True, "required": False, "status": "not_applicable",
                 "reason": "no qq message to deliver", "source": source, "issues": []}
     if delivery == "sent":
         return {"ok": True, "required": True, "status": "sent", "reason": "",
@@ -1487,28 +1734,8 @@ def _deterministic_daily_text() -> str:
 
 
 def _validate_fallback_text(text: str) -> dict:
-    """WB-S1-025 A2：确定性产物结构验证。唯一解析入口 = _split_output（不复制 parser）。
-
-    - 必须同时含完整 <WORKLOG> 与 <QQMSG> 标签；
-    - WORKLOG 段非空；QQMSG 段非空；
-    - 任一缺失/残缺/空段 → ok=False + 精确 issues。
-    """
-    if not text:
-        return {"ok": False, "issues": ["deterministic fallback produced empty output"],
-                "worklog": "", "qq": ""}
-    parts = _split_output(text)
-    worklog = parts.get("worklog") or ""
-    qq = parts.get("qq") or ""
-    issues: list[str] = []
-    if "<WORKLOG>" not in text or "</WORKLOG>" not in text:
-        issues.append("fallback output missing <WORKLOG> tag")
-    if "<QQMSG>" not in text or "</QQMSG>" not in text:
-        issues.append("fallback output missing <QQMSG> tag")
-    if not worklog:
-        issues.append("WORKLOG section empty or missing")
-    if not qq:
-        issues.append("QQMSG section empty or missing")
-    return {"ok": not issues, "issues": issues, "worklog": worklog, "qq": qq}
+    """Validate deterministic output through the single strict parser."""
+    return _split_output(text, strict=True)
 
 
 def _validate_fallback_run(run: dict) -> dict:
@@ -1624,7 +1851,7 @@ def _job_daily_report(ctx: Any) -> dict:
     else:
         fallback_validation = None
 
-    parts = _split_output(text)
+    parts = fallback_validation if render_fallback else _split_output(text)
     worklog_text = parts.get("worklog") or ""
     qq_message = parts.get("qq") or ""
 
@@ -1668,8 +1895,26 @@ def _job_daily_report(ctx: Any) -> dict:
     if qq_message and health_line:
         qq_message = f"{qq_message.rstrip()}\n\n{health_line}"
     delivery = _deliver(qq_message)
-    if delivery == "failed" and qq_message:
-        _queue_delivery(qq_message)
+    queued_retry = False
+    if delivery in {"failed", "error-no-hermes"} and qq_message:
+        delivery_context = _DELIVERY_CONTEXT.get() or {}
+        job_key = delivery_context.get("job_key")
+        attempt_key = delivery_context.get("attempt_key")
+        started_at = delivery_context.get("started_at")
+        error_id = None
+        if all((job_key, attempt_key, started_at)):
+            error_id = _error_identity(
+                job_key,
+                attempt_key,
+                started_at,
+                f"delivery:{delivery}",
+            )
+        queued_retry = _queue_delivery(
+            qq_message,
+            job_key=job_key,
+            attempt_key=attempt_key,
+            error_id=error_id,
+        )
     # WB-S1-024 A2 / WB-S1-025 A3：四态分离 —— input/render/fallback/delivery 各自
     # 独立留证；投递语义：required 时仅 sent 为成功，其余状态（含 unknown）ok=false
     # 并保留 exact status/reason；无需投递 → required=false，不冒充“已发送成功”。
@@ -1690,7 +1935,7 @@ def _job_daily_report(ctx: Any) -> dict:
         "delivery_validation": delivery_validation,
         "worklog": worklog,
         "delivery": delivery,
-        "queued_retry": delivery == "failed" and bool(qq_message),
+        "queued_retry": queued_retry,
     }
     if fallback_validation is not None:
         result["fallback_validation"] = fallback_validation
@@ -1823,6 +2068,13 @@ class Scheduler:
         for job in JOBS:
             if job["key"] == "lifecycle":
                 continue
+            legacy_unresolved = state.get("legacy_delivery_unresolved") or {}
+            if legacy_unresolved.get("job_key") == job["key"]:
+                _log.warning(
+                    "workbench catch-up: %s blocked by legacy unresolved delivery evidence",
+                    job["key"],
+                )
+                continue
             job_cfg = schedule.get(job["key"], {})
             if not job_cfg.get("enabled", True):
                 continue
@@ -1862,7 +2114,20 @@ class Scheduler:
         _set_phase(state, job_key, PHASE_STARTED, attempt_key, started_at=started_at)
         _log.info("workbench scheduler: run %s at %s (attempt %s)", job_key, started_at, attempt_key)
         try:
-            result = await asyncio.to_thread(_JOB_RUNNERS[job_key], self._ctx)
+            delivery_token = _DELIVERY_CONTEXT.set(
+                {
+                    "job_key": job_key,
+                    "attempt_key": attempt_key,
+                    "started_at": started_at,
+                }
+            )
+            try:
+                result = await asyncio.to_thread(_JOB_RUNNERS[job_key], self._ctx)
+            finally:
+                _DELIVERY_CONTEXT.reset(delivery_token)
+            # The runner may have persisted a retry queue.  Reload before phase
+            # advancement so a stale pre-run dict cannot erase that evidence.
+            state = _load_state()
             ok, reason = _result_health(result)
             phase, phase_error = _derive_phase(job_key, result, ok, reason)
             if phase == PHASE_DELIVERY_SENT:
@@ -1872,7 +2137,7 @@ class Scheduler:
                 phase_error = None
             _set_phase(state, job_key, phase, attempt_key, started_at=started_at, last_error=phase_error)
             if not ok:
-                _record_error(job_key, started_at, reason)
+                _record_error(job_key, started_at, reason, attempt_key)
             _append_log(job_key, started_at, ok, result)
             _log.info(
                 "workbench scheduler: %s ok=%s phase=%s reason=%s %s",
@@ -1881,7 +2146,7 @@ class Scheduler:
         except Exception as exc:  # noqa: BLE001
             err = f"exception:{str(exc)[:200]}"
             _set_phase(state, job_key, PHASE_FAILED, attempt_key, started_at=started_at, last_error=err)
-            _record_error(job_key, started_at, err)
+            _record_error(job_key, started_at, err, attempt_key)
             _append_log(job_key, started_at, False, {"error": str(exc)[:500]})
             _log.error("workbench scheduler: %s failed: %s", job_key, exc)
 

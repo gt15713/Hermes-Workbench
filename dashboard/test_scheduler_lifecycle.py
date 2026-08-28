@@ -64,32 +64,74 @@ class TestPhaseContract:
             assert p in scheduler._PHASE_ORDER or hasattr(scheduler, f"PHASE_{p.upper().replace('_', '')}") or True
 
     def test_sent_requires_artifact_to_be_completed(self):
-        phase, err = scheduler._daily_contract("written", "sent")
+        result = {
+            "worklog": "written",
+            "delivery": "sent",
+            "queued_retry": False,
+            "delivery_validation": {"required": True, "ok": True, "status": "sent"},
+        }
+        phase, err = scheduler._daily_contract(result)
         assert phase == scheduler.PHASE_DELIVERY_SENT
         assert err is None
 
     def test_artifact_written_delivery_failed_is_not_completed(self):
-        phase, err = scheduler._daily_contract("written", "failed")
+        result = {
+            "worklog": "written",
+            "delivery": "failed",
+            "queued_retry": True,
+            "delivery_validation": {"required": True, "ok": False, "status": "failed"},
+        }
+        phase, err = scheduler._daily_contract(result)
         assert phase == scheduler.PHASE_ARTIFACT_WRITTEN
-        assert err == "delivery:failed"
+        assert "delivery:failed" in (err or "")
 
     def test_delivery_failed_without_artifact_is_failed(self):
-        phase, err = scheduler._daily_contract("skipped-empty", "failed")
+        result = {
+            "worklog": "skipped-empty",
+            "delivery": "failed",
+            "queued_retry": True,
+            "delivery_validation": {"required": True, "ok": False, "status": "failed"},
+        }
+        phase, _ = scheduler._daily_contract(result)
         assert phase == scheduler.PHASE_FAILED
 
-    def test_delivery_attempt_not_sent_is_failed(self):
-        # 有投递尝试（failed）≠ 已发送；契约必须失败并带 last_error
-        phase, err = scheduler._daily_contract("written", "failed")
-        assert phase != scheduler.PHASE_DELIVERY_SENT
-        assert phase != scheduler.PHASE_COMPLETED
+    def test_delivery_attempt_not_sent_is_failed_without_queue(self):
+        result = {
+            "worklog": "written",
+            "delivery": "failed",
+            "queued_retry": False,
+            "delivery_validation": {"required": True, "ok": False, "status": "failed"},
+        }
+        phase, err = scheduler._daily_contract(result)
+        assert phase == scheduler.PHASE_FAILED
         assert err
 
     def test_no_delivery_needed_completes_when_artifact_ok(self):
-        assert scheduler._daily_contract("written", "unconfigured")[0] == scheduler.PHASE_COMPLETED
-        assert scheduler._daily_contract("written", "skipped-empty")[0] == scheduler.PHASE_COMPLETED
+        result = {
+            "worklog": "written",
+            "delivery": "skipped-empty",
+            "queued_retry": False,
+            "delivery_validation": {"required": False, "ok": True, "status": "not_applicable"},
+        }
+        assert scheduler._daily_contract(result)[0] == scheduler.PHASE_COMPLETED
+
+    def test_unconfigured_is_not_not_applicable(self):
+        result = {
+            "worklog": "written",
+            "delivery": "unconfigured",
+            "queued_retry": False,
+            "delivery_validation": {"required": True, "ok": False, "status": "unconfigured"},
+        }
+        assert scheduler._daily_contract(result)[0] == scheduler.PHASE_FAILED
 
     def test_sent_without_artifact_is_failed(self):
-        phase, err = scheduler._daily_contract("skipped-empty", "sent")
+        result = {
+            "worklog": "skipped-empty",
+            "delivery": "sent",
+            "queued_retry": False,
+            "delivery_validation": {"required": True, "ok": True, "status": "sent"},
+        }
+        phase, err = scheduler._daily_contract(result)
         assert phase == scheduler.PHASE_FAILED
         assert "artifact" in (err or "")
 
@@ -118,7 +160,7 @@ class TestSetPhase:
         )
         js = state["job_states"]["daily_report"]
         assert js["phase"] == scheduler.PHASE_FAILED
-        assert js["last_error"] == "delivery:failed"
+        assert "delivery:failed" in (js["last_error"] or "")
         assert js["started_at"] == "2026-08-28T20:00:05"
         assert "daily_report" not in state["last_runs"]
 
@@ -210,7 +252,13 @@ class TestRunJobLifecycle:
     def test_normal_completion_marks_completed_and_updates_last_runs(self, monkeypatch, isolated_state):
         scheduler_obj = scheduler.Scheduler(None)
         monkeypatch.setattr(scheduler, "_JOB_RUNNERS", {
-            "daily_report": lambda ctx: {"generated": "ok", "worklog": "written", "delivery": "sent"},
+            "daily_report": lambda ctx: {
+                "generated": "ok",
+                "worklog": "written",
+                "delivery": "sent",
+                "queued_retry": False,
+                "delivery_validation": {"required": True, "ok": True, "status": "sent"},
+            },
         })
         monkeypatch.setattr(scheduler, "_deliver", lambda t: "sent")
         asyncio.run(self._run(scheduler_obj, _job(), _key("daily_report", "2026-08-28 20:00")))
@@ -224,19 +272,31 @@ class TestRunJobLifecycle:
     def test_delivery_failed_marks_artifact_written_not_completed(self, monkeypatch, isolated_state):
         scheduler_obj = scheduler.Scheduler(None)
         monkeypatch.setattr(scheduler, "_JOB_RUNNERS", {
-            "daily_report": lambda ctx: {"generated": "ok", "worklog": "written", "delivery": "failed"},
+            "daily_report": lambda ctx: {
+                "generated": "ok",
+                "worklog": "written",
+                "delivery": "failed",
+                "queued_retry": True,
+                "delivery_validation": {"required": True, "ok": False, "status": "failed"},
+            },
         })
         asyncio.run(self._run(scheduler_obj, _job(), _key("daily_report", "2026-08-28 20:00")))
         state = scheduler._load_state()
         js = state["job_states"]["daily_report"]
         assert js["phase"] == scheduler.PHASE_ARTIFACT_WRITTEN
         assert "daily_report" not in state["last_runs"]  # 不把 artifact_written 当完成
-        assert js["last_error"] == "delivery:failed"
+        assert "delivery:failed" in (js["last_error"] or "")
 
     def test_delivery_sent_without_artifact_is_failed(self, monkeypatch, isolated_state):
         scheduler_obj = scheduler.Scheduler(None)
         monkeypatch.setattr(scheduler, "_JOB_RUNNERS", {
-            "daily_report": lambda ctx: {"generated": "ok", "worklog": "skipped-empty", "delivery": "sent"},
+            "daily_report": lambda ctx: {
+                "generated": "ok",
+                "worklog": "skipped-empty",
+                "delivery": "sent",
+                "queued_retry": False,
+                "delivery_validation": {"required": True, "ok": True, "status": "sent"},
+            },
         })
         asyncio.run(self._run(scheduler_obj, _job(), _key("daily_report", "2026-08-28 20:00")))
         js = scheduler._load_state()["job_states"]["daily_report"]

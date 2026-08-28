@@ -134,7 +134,7 @@ def test_real_script_empty_valid_data_still_emits_sections(tmp_path):
 def test_validate_fallback_text_malformed_tag():
     v = scheduler._validate_fallback_text("<WORKLOG>a</WORKLOG><QQMSG>缺闭合")
     assert v["ok"] is False
-    assert any("<QQMSG> tag" in i for i in v["issues"]), v["issues"]
+    assert any("QQMSG" in i for i in v["issues"]), v["issues"]
 
 
 def test_validate_fallback_text_partial_tag():
@@ -235,7 +235,7 @@ def test_delivery_validation_matrix_non_sent_false(status):
 def test_delivery_validation_not_required():
     """无需投递 → required=false/not_applicable，不得冒充已发送成功。"""
     v = scheduler._delivery_validation(False, "not_applicable", "deterministic")
-    assert v["ok"] is False
+    assert v["ok"] is True
     assert v["required"] is False
     assert v["status"] == "not_applicable"
     assert "no qq message" in v["reason"]
