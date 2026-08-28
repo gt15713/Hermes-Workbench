@@ -14,6 +14,8 @@ from __future__ import annotations
 import logging
 import re
 
+from messaging_command import remember_inbound_command
+
 _log = logging.getLogger("workbench-view")
 
 _KNOWN_QQ_EVENTS = {
@@ -70,6 +72,21 @@ def build_ingest_body(text: str, event_message_id: str | None = None) -> dict | 
     }
 
 
+def _existing_session_id(event, gateway, session_store) -> str:
+    """Resolve the current platform conversation without creating a session."""
+    if gateway is None or session_store is None:
+        return ""
+    try:
+        session_key = gateway._session_key_for_source(event.source)
+        peek_session_id = getattr(session_store, "peek_session_id", None)
+        if not callable(peek_session_id):
+            return ""
+        return str(peek_session_id(session_key) or "").strip()
+    except Exception:
+        # Hermes internals may change between releases. Summary fallback is safe.
+        return ""
+
+
 def _on_pre_gateway_dispatch(**kwargs) -> None:
     """Record privacy-safe QQ evidence; never mutate before Hermes authorization."""
     event = kwargs.get("event")
@@ -80,12 +97,13 @@ def _on_pre_gateway_dispatch(**kwargs) -> None:
     platform_value = getattr(platform, "value", platform)
     # P0-B：hook 触发信号（无内容，防隐私泄漏；文本不进日志）
     _log.info("workbench hook fired platform=%s", platform_value)
-    from messaging_command import remember_inbound_command
-
     remember_inbound_command(
         getattr(event, "text", ""),
         getattr(event, "message_id", ""),
         str(platform_value or "messaging"),
+        session_id=_existing_session_id(
+            event, kwargs.get("gateway"), kwargs.get("session_store")
+        ),
     )
     if platform_value != "qqbot":
         return None

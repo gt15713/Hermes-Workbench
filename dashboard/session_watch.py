@@ -124,7 +124,9 @@ def apply_result(item: dict, decision: str, root: Path, dual=None, now=None) -> 
         text = text.rstrip() + f"\n\n## 执行失败记录\n\n- {ts} 收到显式失败结果，自动恢复待办\n"
         _write(dual, path, text)
         _event(dual, "任务", path.name, "reset_execution", "会话异常自动恢复待办")
-        _sync_conversation(dual, text, status="todo", session_id="")
+        # The failed execution session is task-local. Do not erase the source
+        # QQ/Weixin session captured for original-conversation continuation.
+        _sync_conversation(dual, text, status="todo")
         return "failed"
     return "skipped"
 

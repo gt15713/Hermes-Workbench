@@ -7,7 +7,7 @@ from collections import OrderedDict, deque
 from threading import Lock
 from time import monotonic
 
-_PENDING_IDS: OrderedDict[str, deque[tuple[str, str, float]]] = OrderedDict()
+_PENDING_IDS: OrderedDict[str, deque[tuple[str, str, str, float]]] = OrderedDict()
 _PENDING_LOCK = Lock()
 _PENDING_TTL_SECONDS = 120.0
 _PENDING_MAX_KEYS = 256
@@ -18,7 +18,13 @@ def _invocation_id() -> str:
     return f"plugin-command:{uuid.uuid4().hex}"
 
 
-def remember_inbound_command(text: str, message_id: str, platform: str) -> None:
+def remember_inbound_command(
+    text: str,
+    message_id: str,
+    platform: str,
+    *,
+    session_id: str = "",
+) -> None:
     """Bridge official pre-dispatch identity to the authorized slash handler."""
     normalized = str(text or "").strip()
     if not normalized.lower().startswith("/wb") or not str(message_id or "").strip():
@@ -27,7 +33,14 @@ def remember_inbound_command(text: str, message_id: str, platform: str) -> None:
     with _PENDING_LOCK:
         _prune_pending_locked()
         queue = _PENDING_IDS.setdefault(args, deque())
-        queue.append((str(platform or "messaging"), str(message_id).strip(), monotonic()))
+        queue.append(
+            (
+                str(platform or "messaging"),
+                str(message_id).strip(),
+                str(session_id or "").strip(),
+                monotonic(),
+            )
+        )
         _PENDING_IDS.move_to_end(args)
         while len(queue) > 32:
             queue.popleft()
@@ -39,31 +52,31 @@ def _prune_pending_locked() -> None:
     cutoff = monotonic() - _PENDING_TTL_SECONDS
     for key in list(_PENDING_IDS):
         queue = _PENDING_IDS[key]
-        while queue and queue[0][2] < cutoff:
+        while queue and queue[0][3] < cutoff:
             queue.popleft()
         if not queue:
             _PENDING_IDS.pop(key, None)
 
 
-def _consume_inbound_identity(args: str) -> tuple[str, str]:
+def _consume_inbound_identity(args: str) -> tuple[str, str, str]:
     with _PENDING_LOCK:
         _prune_pending_locked()
         queue = _PENDING_IDS.get(args)
         if queue:
             # Latest wins so a stale pre-auth event from a rejected sender
             # cannot shadow a later authorized invocation with identical text.
-            platform, message_id, _created_at = queue.pop()
+            platform, message_id, session_id, _created_at = queue.pop()
             if not queue:
                 _PENDING_IDS.pop(args, None)
-            return platform, message_id
-    return "messaging", _invocation_id()
+            return platform, message_id, session_id
+    return "messaging", _invocation_id(), ""
 
 
 async def _handle_workbench_command(raw_args: str) -> str:
     from plugin_api import qq_command
 
     args = str(raw_args or "").strip()
-    platform, message_id = _consume_inbound_identity(args)
+    platform, message_id, session_id = _consume_inbound_identity(args)
     result = await qq_command(
         {
             "text": f"/wb {args}".rstrip(),
@@ -84,6 +97,7 @@ async def _handle_workbench_command(raw_args: str) -> str:
             summary=summary,
             task_id=str(result["task_id"]),
             status="active",
+            session_id=session_id,
         )
     return str(result.get("reply") or result.get("error") or "Workbench 命令未处理。")
 

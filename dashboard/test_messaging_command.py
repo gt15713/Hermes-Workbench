@@ -95,12 +95,19 @@ def test_cross_platform_append_indexes_the_second_authorized_conversation(wb):
     handler = ctx.commands["wb"]["handler"]
 
     create_args = "任务 跨平台续接"
-    remember_inbound_command(f"/wb {create_args}", "qq-create-1", "qq")
+    remember_inbound_command(
+        f"/wb {create_args}", "qq-create-1", "qq", session_id="qq-session"
+    )
     create_reply = asyncio.run(handler(create_args))
     task_id = create_reply.split("：", 1)[0].removeprefix("已创建任务 ")
 
     append_args = f"继续 {task_id} 来自微信"
-    remember_inbound_command(f"/wb {append_args}", "weixin-append-1", "weixin")
+    remember_inbound_command(
+        f"/wb {append_args}",
+        "weixin-append-1",
+        "weixin",
+        session_id="weixin-session",
+    )
     append_reply = asyncio.run(handler(append_args))
 
     assert append_reply == f"已续接 {task_id}：来自微信"
@@ -115,6 +122,13 @@ def test_cross_platform_append_indexes_the_second_authorized_conversation(wb):
         ("weixin", task_id),
     }
     assert {item["summary"] for item in indexed} == {"跨平台续接"}
+    assert {
+        (item["platform"], item["session_id"], item["resume_mode"])
+        for item in indexed
+    } == {
+        ("qq", "qq-session", "original"),
+        ("weixin", "weixin-session", "original"),
+    }
 
 
 def test_pre_auth_identity_cache_is_globally_bounded():

@@ -15,10 +15,12 @@ def register(ctx) -> None:
         sys.path.insert(0, dashboard_dir)
 
     from inbound_hook import register as _register_inbound_hook
+    from agent_tool import register_workbench_tool
     from messaging_command import register_workbench_command
 
     _register_inbound_hook(ctx)
     register_workbench_command(ctx)
+    register_workbench_tool(ctx)
 
     # 内建调度器：启动失败只记日志，绝不拖垮入站 hook（重启后先验 hook 再验 scheduler）。
     try:

@@ -122,7 +122,7 @@ def test_apply_completed_syncs_authorized_conversation(root):
     assert index.list_conversations()[0]["status"] == "completed"
 
 
-def test_apply_failed_syncs_todo_and_clears_authorized_session(root):
+def test_apply_failed_syncs_todo_and_preserves_source_session(root):
     from conversation_index import ConversationIndex
     from repo import DualRepo, FileRepo, SqliteRepo
 
@@ -151,8 +151,8 @@ def test_apply_failed_syncs_todo_and_clears_authorized_session(root):
     assert action == "failed"
     row = index.list_conversations()[0]
     assert row["status"] == "todo"
-    assert row["session_id"] is None
-    assert row["resume_mode"] == "summary"
+    assert row["session_id"] == "sess-1"
+    assert row["resume_mode"] == "original"
     assert "session_id: sess-1" not in p.read_text(encoding="utf-8")
 
 

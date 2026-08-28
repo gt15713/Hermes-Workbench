@@ -3,3 +3,7 @@ version: 1.0.0
 description: Hermes 消息平台 QQ Bot 任务信息流工作台（登记/展示/提醒/归档）
 hooks:
   - pre_gateway_dispatch
+provides_hooks:
+  - pre_gateway_dispatch
+provides_tools:
+  - workbench_capture
