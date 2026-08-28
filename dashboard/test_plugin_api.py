@@ -172,6 +172,10 @@ class TestReviewedContentInboxApi:
         assert first["ok"] is True
         assert first["item"]["review_state"] == "sink_queued"
         assert first["item"]["note_path"] == ""
+        # 契约（2026-08-27 回归修复）：安全重复操作必须返回稳定完整 item，
+        # 不得让 HTTP 层出现无 item 的不可消费结构。
+        assert second["idempotent_no_op"] is True
+        assert second["item"]["review_state"] == "sink_queued"
         assert second["item"]["sink_task_id"] == first["item"]["sink_task_id"]
         tasks = list((wb / "任务").glob("*.md"))
         assert len(tasks) == 1
@@ -858,7 +862,7 @@ class TestFrontmatterAndBinding:
         assert out.startswith("---")
         assert "session_id: sess-2" in out
 
-    def test_bind_session_updates_all_authorized_conversation_refs_by_task_id(self, wb):
+    def test_bind_execution_session_does_not_overwrite_source_conversation_refs(self, wb):
         from conversation_index import ConversationIndex
 
         p = wb / "任务" / "bind-index.md"
@@ -874,6 +878,7 @@ class TestFrontmatterAndBinding:
                 summary="同一个跨平台任务",
                 task_id="WB-AABBCCDD",
                 status="active",
+                session_id=f"{platform}-original-session",
             )
 
         result = asyncio.run(
@@ -885,7 +890,10 @@ class TestFrontmatterAndBinding:
         assert result["ok"] is True
         rows = index.list_conversations()
         assert len(rows) == 2
-        assert {row["session_id"] for row in rows} == {"sess-shared"}
+        assert {(row["platform"], row["session_id"]) for row in rows} == {
+            ("qq", "qqbot-original-session"),
+            ("weixin", "weixin-original-session"),
+        }
         assert {row["resume_mode"] for row in rows} == {"original"}
 
     def test_bind_session_without_frontmatter_fails(self, wb):
@@ -1036,7 +1044,7 @@ class TestConversationLifecycleSync:
         assert result["ok"] is True
         assert index.list_conversations()[0]["status"] == "deleted"
 
-    def test_reset_execution_restores_todo_and_clears_orphan_session(self, wb):
+    def test_reset_execution_clears_task_execution_but_preserves_source_session(self, wb):
         p = wb / "任务" / "reset-index.md"
         _write(
             p,
@@ -1044,7 +1052,7 @@ class TestConversationLifecycleSync:
         )
         index = _seed_authorized_conversation("WB-1000000A")
         index.update_by_task_id(
-            "WB-1000000A", status="in_progress", session_id="orphan-session"
+            "WB-1000000A", status="in_progress", session_id="source-original-session"
         )
 
         result = asyncio.run(
@@ -1054,8 +1062,9 @@ class TestConversationLifecycleSync:
         assert result["ok"] is True
         row = index.list_conversations()[0]
         assert row["status"] == "todo"
-        assert row["session_id"] is None
-        assert row["resume_mode"] == "summary"
+        assert row["session_id"] == "source-original-session"
+        assert row["resume_mode"] == "original"
+        assert "session_id: orphan-session" not in p.read_text(encoding="utf-8")
 
 
 # ---------- 阶段 0 新测试：闭环四件套 ----------

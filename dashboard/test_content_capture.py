@@ -5,6 +5,7 @@ import pytest
 from content_capture import (
     canonicalize_url,
     capture_content,
+    complete_content_sink,
     get_content_item,
     review_content,
 )
@@ -240,3 +241,103 @@ def test_get_content_item_supports_capture_id(repo):
 
     assert result["ok"] is True
     assert result["item"]["canonical_url"] == "https://example.com/watch?id=7"
+
+
+def _queue_sink(repo):
+    """capture → sink_to_obsidian(queued) → 返回 sink_queued item。"""
+    captured = _capture(repo)
+    queued = review_content(
+        repo, captured["item"]["dir"], captured["item"]["file"], "sink_to_obsidian",
+        sink=lambda captured: {
+            "ok": True,
+            "status": "queued",
+            "task_id": "WB-A1B2C3D4",
+            "task_dir": "任务",
+            "task_file": "content-ingest-abc.md",
+            "task_path": "任务/content-ingest-abc.md",
+        },
+    )
+    assert queued["ok"] is True
+    return queued["item"]
+
+
+class TestSinkReceiptPathSafety:
+    """WB-S1-011：note_path 必须为 vault-relative，禁止路径逃逸/绝对路径/URL。
+
+    回执是 Agent 的自我声称——结构校验是最后一道防线：恶意/错误回执
+    不得把「已沉淀到 Vault 外路径」伪装成成功。
+    """
+
+    def test_receipt_accepts_vault_relative_subdir(self, repo):
+        item = _queue_sink(repo)
+        result = complete_content_sink(
+            repo, item["capture_id"], item["sink_task_id"], note_path="心理学/UP主/学习资料.md"
+        )
+        assert result["ok"] is True
+        assert result["item"]["review_state"] == "sunk"
+        assert result["item"]["note_path"] == "心理学/UP主/学习资料.md"
+
+    def test_receipt_rejects_absolute_windows_path(self, repo):
+        item = _queue_sink(repo)
+        result = complete_content_sink(
+            repo, item["capture_id"], item["sink_task_id"],
+            note_path=r"Z:\Vault\evil.md",
+        )
+        assert result["ok"] is False
+        assert result["item"]["review_state"] == "sink_failed"
+        assert "note_path" in result["error"].lower()
+
+    def test_receipt_rejects_drive_root(self, repo):
+        item = _queue_sink(repo)
+        result = complete_content_sink(
+            repo, item["capture_id"], item["sink_task_id"], note_path="C:/Windows/evil.md"
+        )
+        assert result["ok"] is False
+        assert result["item"]["review_state"] == "sink_failed"
+
+    def test_receipt_rejects_dotdot_escape(self, repo):
+        item = _queue_sink(repo)
+        result = complete_content_sink(
+            repo, item["capture_id"], item["sink_task_id"], note_path="../../外部/evil.md"
+        )
+        assert result["ok"] is False
+        assert result["item"]["review_state"] == "sink_failed"
+
+    def test_receipt_rejects_leading_slash(self, repo):
+        item = _queue_sink(repo)
+        result = complete_content_sink(
+            repo, item["capture_id"], item["sink_task_id"], note_path="/绝对根/evil.md"
+        )
+        assert result["ok"] is False
+        assert result["item"]["review_state"] == "sink_failed"
+
+    def test_receipt_rejects_url_note_path(self, repo):
+        item = _queue_sink(repo)
+        result = complete_content_sink(
+            repo, item["capture_id"], item["sink_task_id"],
+            note_path="https://example.com/evil.md",
+        )
+        assert result["ok"] is False
+        assert result["item"]["review_state"] == "sink_failed"
+
+    def test_receipt_failure_keeps_item_retryable(self, repo):
+        item = _queue_sink(repo)
+        result = complete_content_sink(
+            repo, item["capture_id"], item["sink_task_id"], note_path="../../逃逸.md"
+        )
+        assert result["ok"] is False
+        assert result["retryable"] is True
+        # 可重试：再次 sink_to_obsidian 不因终态被挡
+        retry = review_content(
+            repo, "待验证", item["file"], "sink_to_obsidian",
+            sink=lambda captured: {
+                "ok": True,
+                "status": "queued",
+                "task_id": "WB-A1B2C3D4",
+                "task_dir": "任务",
+                "task_file": "content-ingest-abc.md",
+                "task_path": "任务/content-ingest-abc.md",
+            },
+        )
+        assert retry["ok"] is True
+        assert retry["item"]["review_state"] == "sink_queued"

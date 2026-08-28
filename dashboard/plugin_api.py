@@ -46,6 +46,9 @@ from content_capture import (
 from content_capture import (
     review_content as _review_content,
 )
+from content_capture import (
+    retry_extraction as _retry_content_extraction,
+)
 from contract import (
     PARTITIONS,
     SCHEMA_VERSION,
@@ -142,6 +145,10 @@ def _queue_content_ingestion_sink(item: dict) -> dict:
 # Review-before-write boundary.  The plugin host may replace this callable
 # with an authorized Obsidian adapter; capture itself never calls it.
 CONTENT_INGESTION_SINK = _queue_content_ingestion_sink
+
+# Task 5（2026-08-27）：独立重试抽取钩子。默认 None = 本插件不带网络抓取器，
+# 端点会如实返回 retryable 错误，绝不伪造「抽取成功」。宿主/Agent 链可注入。
+CONTENT_EXTRACTION_HOOK = None
 
 
 def _get_qq_health() -> dict:
@@ -400,6 +407,22 @@ async def content_sink_receipt(body: dict) -> dict:
         note_path=body.get("note_path") or "",
         error=body.get("error") or "",
     )
+
+
+@router.post("/content/retry-extraction")
+async def content_retry_extraction(body: dict) -> dict:
+    """Task 5（2026-08-27）：独立重试抽取端点——与沉淀严格分离。
+
+    钩子未注入时如实返回 retryable 错误（不伪造成功）；
+    无真实 note path/index 前永远不出「Memory updated」语义。
+    """
+    return _retry_content_extraction(
+        file_repo,
+        body.get("dir"),
+        body.get("file"),
+        extract=CONTENT_EXTRACTION_HOOK,
+    )
+
 
 @router.get("/board")
 def board() -> dict:
@@ -765,6 +788,17 @@ def health() -> dict:
     error_count, last_error = _active_errors(state)
     delivery_pending = bool(state.get("pending_delivery"))
     vault_configured = bool(get_vault())
+    # WB-S1-011：日报生命周期三态（execution/artifact/delivery 分开展示，不混为一谈）
+    daily_js = (state.get("job_states") or {}).get("daily_report") or {}
+    daily_report = {
+        "phase": daily_js.get("phase"),
+        "attempt_key": daily_js.get("attempt_key"),
+        "started_at": daily_js.get("started_at"),
+        "artifact_written_at": daily_js.get("artifact_written_at"),
+        "delivery_sent_at": daily_js.get("delivery_sent_at"),
+        "completed_at": daily_js.get("completed_at"),
+        "last_error": daily_js.get("last_error"),
+    }
     qq = _get_qq_health()
     checks = [
         {
@@ -828,6 +862,7 @@ def health() -> dict:
         "delivery_pending": delivery_pending,
         "vault_configured": vault_configured,
         "qq": qq,
+        "daily_report": daily_report,
         "status": status,
         "label": label,
         "checks": checks,
@@ -1583,8 +1618,14 @@ async def ingest_message(body: dict) -> dict:
             raise
         file_repo.db.ingest_upsert(message_id, dirname, p.name, "done")
         # API-B（B1）：记录带信息的 created 业务事件（UPDATE 镜像空行或 INSERT；两种场景恰好一条，幂等）
-        file_repo.db.record_ingest_created(dirname, p.name, f"收录：{title}")
-        _log_action(f"{_normalized_message_source(body.get('platform'))} 收录 → {dirname}", f"「{title}」")
+        privacy_safe_log = bool(body.get("privacy_safe_log"))
+        event_detail = f"收录：{task_id or dirname}" if privacy_safe_log else f"收录：{title}"
+        action_detail = f"公开任务 {task_id}" if privacy_safe_log else f"「{title}」"
+        file_repo.db.record_ingest_created(dirname, p.name, event_detail)
+        _log_action(
+            f"{_normalized_message_source(body.get('platform'))} 收录 → {dirname}",
+            action_detail,
+        )
         result = {"ok": True, "duplicate": False, "file": p.name, "dir": dirname}
         if task_id:
             result["task_id"] = task_id
@@ -1699,6 +1740,7 @@ async def qq_command(body: dict) -> dict:
                     "title": command.argument[:80],
                     "content": command.argument,
                     "operation_marker": operation_marker,
+                    "privacy_safe_log": bool(body.get("privacy_safe_log")),
                 }
             )
             if result.get("ok") and not result.get("duplicate"):
@@ -1753,14 +1795,17 @@ async def qq_command(body: dict) -> dict:
                 )
                 updated = _patch_frontmatter(updated, {"qq_operation": operation_marker})
                 _atomic_write(target, updated, expected_mtime=target.stat().st_mtime)
-                file_repo.record_updated_payload(
-                    "任务", target.name, f"{platform} 续接：{command.extra[:160]}"
-                )
-                file_repo.db.ingest_upsert(operation_id, "任务", target.name, "done")
                 task_id_match = re.search(
                     r"(?m)^task_id:\s*(WB-[0-9A-Fa-f]{8})\s*$", updated
                 )
                 task_id = task_id_match.group(1).upper() if task_id_match else ""
+                payload = (
+                    f"{platform} 续接：{task_id}"
+                    if body.get("privacy_safe_log")
+                    else f"{platform} 续接：{command.extra[:160]}"
+                )
+                file_repo.record_updated_payload("任务", target.name, payload)
+                file_repo.db.ingest_upsert(operation_id, "任务", target.name, "done")
                 return {
                     "ok": True,
                     "handled": True,
@@ -2014,7 +2059,10 @@ async def bind_session(body: dict) -> dict:
         _atomic_write(target, text)
         _log_action("🔗 绑定执行会话", f"「{target.stem}」→ {session_id}")
         file_repo.event(body.get("dir", ""), target.name, "bind_session", f"🔗 绑定执行会话 → {session_id}")
-        _sync_conversation(text, session_id=session_id)
+        # This is the Workbench-created execution session, not the source QQ/
+        # Weixin conversation. Source refs keep their own session IDs captured
+        # by the gateway hook; copying this value to every ref would cross-wire
+        # otherwise isolated platform conversations.
     return {"ok": True, "session_id": session_id, "file": target.name}
 
 
@@ -2039,7 +2087,9 @@ async def reset_execution(body: dict) -> dict:
         reason = str(body.get("reason") or "会话启动失败").strip()
         new_text += f"\n## 执行失败记录\n\n- {datetime.now():%Y-%m-%d %H:%M} {reason}\n"
         _atomic_write(target, new_text)
-        _sync_conversation(new_text, status="todo", session_id="")
+        # Reset only the Workbench execution session in task frontmatter.
+        # The indexed QQ/Weixin source conversation remains resumable.
+        _sync_conversation(new_text, status="todo")
         _log_action("执行失败 → 恢复待办", f"「{target.stem}」：{reason}")
     file_repo.event(body.get("dir", ""), target.name, "reset_execution", f"执行失败恢复待办：{reason}")
     return {"ok": True, "status": "todo", "file": target.name}

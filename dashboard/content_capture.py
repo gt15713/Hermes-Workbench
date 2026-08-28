@@ -164,6 +164,20 @@ def review_content(
     item = found["item"]
     path = repo.partition_dir(PARTITION) / item["file"]
     now = _now()
+
+    # 幂等守卫（2026-08-27 Task 5）：终态/在途态重复点击直接拒绝，
+    # 不二次搬运、不覆盖任务引用、不产生重复事件。
+    # 契约（2026-08-27 回归修复）：拒绝响应必须携带稳定完整的 item——
+    # API/HTTP 层不得把安全重复操作包装成无 item 的不可消费结构；
+    # 调用方凭 item.sink_task_id 复用既有任务，凭 idempotent_no_op 区分语义。
+    state = item.get("review_state")
+    if state == "archived":
+        return {"ok": False, "error": "content already archived", "idempotent_no_op": True, "item": item}
+    if state == "sunk":
+        return {"ok": False, "error": "content already sunk", "idempotent_no_op": True, "item": item}
+    if action == "sink_to_obsidian" and state == "sink_queued":
+        return {"ok": False, "error": "content is already queued for sink", "idempotent_no_op": True, "item": item}
+
     if action == "archive_only":
         item.update(review_state="archived", reviewed_at=now, last_error="")
         repo.write_text(path, _render(item))
@@ -206,6 +220,29 @@ def review_content(
     return {"ok": False, "error": error, "retryable": True, "item": item}
 
 
+def _is_safe_vault_relative_note_path(note_path: str) -> bool:
+    """回执 note_path 必须为 vault-relative 安全相对路径。
+
+    拒绝：绝对路径（盘符/根/UNC）、URL、``..`` 路径逃逸（含编码变体）。
+    这是 Agent 自我声称的最后防线——不校验会把「已沉淀到 Vault 外」伪装成成功。
+    """
+    p = str(note_path or "").strip()
+    if not p:
+        return False
+    if re.match(r"^[A-Za-z]:[\\/]", p):  # 盘符绝对路径
+        return False
+    if p.startswith(("/", "\\")):  # 根/UNC
+        return False
+    if "://" in p:  # URL
+        return False
+    norm = posixpath.normpath(p.replace("\\", "/"))
+    if norm in ("", ".", ".."):
+        return False
+    if norm.startswith("../") or "/../" in f"/{norm}":
+        return False
+    return True
+
+
 def complete_content_sink(repo, capture_id, task_id, *, note_path="", error="") -> dict:
     """Apply one Agent receipt; only its bound queued task may complete the item."""
     path, item = _find(repo, capture_id=str(capture_id or "").strip())
@@ -219,8 +256,11 @@ def complete_content_sink(repo, capture_id, task_id, *, note_path="", error="") 
     now = _now()
     failure = str(error or "").strip()
     durable_path = str(note_path or "").strip()
-    if failure or not durable_path:
-        failure = failure or "Obsidian sink returned no note_path"
+    if failure or not durable_path or not _is_safe_vault_relative_note_path(durable_path):
+        if not failure and durable_path:
+            failure = "Obsidian sink returned unsafe note_path (must be vault-relative, no absolute path or .. escape)"
+        else:
+            failure = failure or "Obsidian sink returned no note_path"
         item.update(review_state="sink_failed", reviewed_at=now, last_error=failure, note_path="")
         repo.write_text(path, _render(item))
         _event(repo, item, "content_sink_failed", f"摄入任务失败：{item['sink_task_id']}（可重试）")
@@ -232,4 +272,58 @@ def complete_content_sink(repo, capture_id, task_id, *, note_path="", error="") 
     repo.move(path, destination)
     item["dir"] = ARCHIVE_PARTITION
     _event(repo, item, "content_sunk", f"已沉淀：{item['capture_id']} -> {durable_path}")
+    return {"ok": True, "item": item}
+
+
+def retry_extraction(repo, dirname, filename, *, extract=None) -> dict:
+    """Task 5（2026-08-27）：独立「重试抽取」transition。
+
+    与沉淀（review_content→sink_to_obsidian）严格分离——本函数只负责把
+    pending/failed 的抽取重新拉起。extract 为注入的抓取回执（与 sink 同款
+    注入约定：纯 domain 函数，不做网络/平台 IO），返回：
+        {"ok": True,  "original_text": str, "canonical_url": str(可选)}
+    终态（sunk/archived）拒绝；失败保留可重试并记录真实原因。
+    """
+    if extract is None:
+        return {"ok": False, "error": "extraction hook unavailable"}
+    found = get_content_item(repo, dirname=dirname, filename=filename)
+    if not found["ok"]:
+        return found
+    item = found["item"]
+    state = item.get("review_state")
+    if state in {"archived", "sunk"}:
+        return {
+            "ok": False,
+            "error": f"content is {state}; extraction retry no longer applies",
+            "idempotent_no_op": True,
+        }
+
+    path = repo.partition_dir(PARTITION) / item["file"]
+    try:
+        result = extract(dict(item))
+        if (
+            not isinstance(result, dict)
+            or not result.get("ok")
+            or not str(result.get("original_text") or "").strip()
+        ):
+            raise RuntimeError(
+                str((result or {}).get("error") or "extractor returned no original_text")
+            )
+    except Exception as exc:  # noqa: BLE001 —— 真实原因原样入档
+        error = str(exc) or exc.__class__.__name__
+        item["extraction_state"] = "failed"
+        item["last_error"] = error
+        item["reviewed_at"] = _now()
+        repo.write_text(path, _render(item))
+        _event(repo, item, "content_retry_extraction_failed", f"{item['capture_id']}：{error}")
+        return {"ok": False, "error": error, "retryable": True, "item": item}
+
+    item["original_text"] = str(result["original_text"]).strip()
+    if result.get("canonical_url"):
+        item["canonical_url"] = str(result["canonical_url"]).strip()
+    item["extraction_state"] = "extracted"
+    item["last_error"] = ""
+    item["reviewed_at"] = _now()
+    repo.write_text(path, _render(item))
+    _event(repo, item, "content_retry_extraction_ok", f"抽取成功：{item['capture_id']}")
     return {"ok": True, "item": item}
