@@ -46,8 +46,10 @@ def test_report_data_schema_and_sunday_flag(tmp_path):
     code, out = _run("workbench_daily_report.py", tmp_path, tmp_path / "wb.db")
     assert code == 0
     d = json.loads(out)
-    # D2（P2-2）扩展：week 周聚合加入契约（旧字段保留）
-    assert set(d.keys()) == {"today", "is_sunday", "processed", "pending", "week"}
+    # D2（P2-2）扩展：week 周聚合加入契约；S1-006 新增 data_validated/factual_validation
+    assert set(d.keys()) == {"today", "is_sunday", "processed", "pending", "week", "data_validated", "factual_validation"}
+    assert d["data_validated"] is True
+    assert d["factual_validation"]["ok"] is True
     assert isinstance(d["is_sunday"], bool)
     assert isinstance(d["processed"], list)
     assert isinstance(d["pending"], list)

@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """工作台日报：确定性模板输出 + P0-4（B5）数据采集模式（JSON 供 Agent cron prompt 消费）。
 
-- --data：输出 {today, is_sunday（SUNDAY_REVIEW=on 已拍板）, processed, pending} JSON
+- --data：输出 {today, data_validated, factual_validation, processed, pending} JSON
 - 无参数：保持确定性模板（no_agent 回退）
+- --date YYYY-MM-DD：固定日期 dry-run / 历史回放（不冻结 TODAY 于 import）
 """
 
 import argparse
@@ -14,7 +15,17 @@ from pathlib import Path
 
 # P0-A：env 注入优先；手动运行回落中立默认
 ROOT = Path(os.environ.get("WORKBENCH_ROOT", str(Path.home() / "Workbench")))
-TODAY = dt.date.today().isoformat()
+
+# 分类标题模式（如 `任务（1 条）`）不是条目标题
+_CATEGORY_HEADING = re.compile(r"^[^（）()]+\s*[（(]\s*\d+\s*条\s*[）)]$")
+# 日期文件名模式（空壳回退产生的伪条目）
+_DATE_TITLE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# 已知日期前缀（文件名搬运残留）：2026-08-23-xxx → xxx
+_DATE_PREFIX = re.compile(r"^\d{4}-\d{2}-\d{2}[-—\s]")
+# B站/传输后缀残留：-哔哩哔哩-https-b23. / -哔哩哔哩-https://www.bilibili.com/video/xxx
+_BILI_TRANSPORT_SUFFIX = re.compile(r"[-—]\s*(?:哔哩哔哩|bilibili)\s*[-—]\s*https?[:/.A-Za-z0-9_-]*\.?$", re.I)
+# 裸 URL 标题：不发明页面标题，中性标记为链接
+_URL_ONLY = re.compile(r"^https?://\S+$")
 
 
 def read(path: Path) -> str:
@@ -35,6 +46,73 @@ def frontmatter(text: str) -> dict[str, str]:
 
 def headings(text: str) -> list[str]:
     return [m.group(1).strip() for m in re.finditer(r"^## (.+)$", text, re.M)]
+
+
+def normalize_title(title: str) -> str:
+    """用户可见标题规范化（有测试的确定性规则，不截断任意中文）。
+
+    优先级（CoderX S1-008 定义）：
+    1. 已由调用方按「非 URL 别名 > 条目标题 > 任务 frontmatter title > 文件名清理」选择；
+    2. 已知日期前缀（YYYY-MM-DD-…）剥离；
+    3. B站传输后缀残留（-哔哩哔哩-https-b23. 等）剥离；
+    4. 剥离后若为裸 URL → 不发明页面标题，中性前缀「链接：」。
+    """
+    title = _DATE_PREFIX.sub("", title.strip())
+    title = _BILI_TRANSPORT_SUFFIX.sub("", title.strip())
+    title = title.rstrip(" .，,")
+    if _URL_ONLY.match(title):
+        return f"链接：{title}"
+    return title
+
+
+def list_items(text: str) -> list[str]:
+    """`-`/`*` 列表行中的真实条目标题（用户可见别名优先）。
+
+    从 `- [[target|显示名]] — 标记完成` 提取**显示名**（| 后别名）；
+    无别名时回退 target；普通 `- 文本` 行也计入。
+    分类标题（如 `任务（1 条）`）由 headings() 提供，不属于本函数。
+    返回前经 normalize_title()：剥离已知日期前缀/传输后缀；裸 URL 标记「链接：」。
+    """
+    items: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not (line.startswith("- ") or line.startswith("* ")):
+            continue
+        title = line[2:].strip()
+        m = re.match(r"^\[\[([^\]|]+)(?:\|([^\]]+))?\]\]", title)
+        if m:
+            # m.group(2)=别名（用户可见），m.group(1)=wiki target
+            title = (m.group(2) or m.group(1)).strip()
+        # 去掉「— 标记完成 / — 条目级，来自 …」等后缀
+        title = re.sub(r"\s*—\s*.*$", "", title).strip()
+        if title:
+            items.append(normalize_title(title))
+    return items
+
+
+def _entry_titles(text: str) -> list[str]:
+    """聚合文件内的真实条目标题（规范条目：## 标题 + 列表行，别名优先）。
+
+    空壳日期文件（只有日期标题/frontmatter）→ []。
+    分类标题（`任务（1 条）`）、日期标题、`原始消息`/`备注` 前缀不入条目。
+    去重保序，保证同一文件内同一文本只计一次。
+    """
+    titles: list[str] = []
+    for h in headings(text):
+        h = h.strip()
+        if h.startswith(("原始消息", "备注")):
+            continue
+        if _CATEGORY_HEADING.match(h) or _DATE_TITLE.match(h):
+            continue
+        titles.append(h)
+    titles.extend(list_items(text))
+    seen: set[str] = set()
+    uniq: list[str] = []
+    for t in titles:
+        if t not in seen:
+            seen.add(t)
+            uniq.append(t)
+    return uniq
 
 
 # ---------- D2（P2-2）周聚合 ----------
@@ -84,11 +162,9 @@ def collect_week(today: dt.date | None = None) -> dict:
             f = done_dir / f"{day.isoformat()}.md"
             if f.exists():
                 text = read(f)
-                completed.extend(
-                    x for x in headings(text) if not x.startswith(("原始消息", "备注"))
-                )
+                completed.extend(list_items(text))
 
-    # 本周新增 / 遗留 / 被阻塞：待回看 + 待验证 + 任务
+    # 本周新增 / 遗留 / 被阻塞：待回看 + 待验证 + 任务 —— 按真实条目计数（非文件数）
     new_count = 0
     remaining_count = 0
     blocked_count = 0
@@ -99,13 +175,29 @@ def collect_week(today: dt.date | None = None) -> dict:
         for path in sorted(folder.glob("*.md")):
             text = read(path)
             fm = frontmatter(text)
+            status = fm.get("status", "")
+            if dirname == "任务":
+                # 任务卡 = 1 条（文件即任务），仅活动状态计数
+                if status not in {"todo", "pending", "in_progress"}:
+                    continue
+                entry_count = 1
+                item_remaining = bool(status not in {"done", "completed", "archived"})
+                item_blocked = bool(_is_blocked(fm))
+            else:
+                # 聚合文件：条目 = 文件内真实条目数（## 标题 + 列表行）
+                entries = _entry_titles(text)
+                if not entries or status not in {"pending", "todo"}:
+                    continue
+                entry_count = len(entries)
+                item_remaining = True
+                item_blocked = False
             created = _created_date(path, fm)
-            if created is not None and monday <= created <= sunday:
-                new_count += 1
-                status = fm.get("status", "")
-                if status not in {"done", "completed", "archived"}:
-                    remaining_count += 1
-            if dirname == "任务" and _is_blocked(fm):
+            if created is None or not (monday <= created <= sunday):
+                continue
+            new_count += entry_count
+            if item_remaining:
+                remaining_count += entry_count
+            if dirname == "任务" and item_blocked:
                 blocked_count += 1
 
     # 下周到期：任务区 status 未完成 + due ∈ (today, today+7]
@@ -134,8 +226,14 @@ def collect_week(today: dt.date | None = None) -> dict:
     }
 
 
-def collect() -> dict:
-    """数据采集：日报的 Agent prompt 输入。"""
+def collect(data_date: str | None = None) -> dict:
+    """数据采集：日报的 Agent prompt 输入。
+
+    data_date 可注入（YYYY-MM-DD）；缺失时用当前本地日期，
+    不在 import 时冻结，避免午夜漂移。
+    """
+    today = dt.date.fromisoformat(data_date) if data_date else dt.date.today()
+    today_s = today.isoformat()
     processed: list[str] = []
     pending: list[dict] = []
     for dirname, label in (("待回看", "待回看"), ("待验证", "待验证"), ("任务", "待办")):
@@ -158,35 +256,41 @@ def collect() -> dict:
             else:
                 if status not in {"pending", "todo"}:
                     continue
-                entries = [x for x in headings(text) if not x.startswith(("原始消息", "备注"))]
-                pending.extend({"label": label, "title": x, "due": "", "blocked": False} for x in (entries or [path.stem]))
+                entries = _entry_titles(text)
+                # 空壳 aggregate 文件（如 `待回看/2026-08-18.md` 只有标题）不算条目：
+                # 不把日期文件名回退成伪待办。
+                pending.extend({"label": label, "title": x, "due": "", "blocked": False} for x in entries)
 
-    done = ROOT / "已处理" / f"{TODAY}.md"
+    done = ROOT / "已处理" / f"{today_s}.md"
     if done.exists():
         text = read(done)
-        processed = [x for x in headings(text) if not x.startswith(("原始消息", "备注"))]
+        # 已处理 = 分类标题下的链接/列表行（绝不把 `任务（1 条）` 分类标题当完成项）
+        processed = list_items(text)
 
     # G9（2026-08-17 R6 补强）：注入 top N 限额（超期 top10 + 阻塞 top5 + 其他 20），超限截断防上下文超载
-    overdue = [q for q in pending if q.get("due") and q["due"] < TODAY][:10]
+    overdue = [q for q in pending if q.get("due") and q["due"] < today_s][:10]
     blocked = [q for q in pending if q.get("blocked")][:5]
     seen_ids = {id(q) for q in overdue + blocked}
     others = [q for q in pending if id(q) not in seen_ids][:20]
     pending = overdue + blocked + others
 
     return {
-        "today": TODAY,
-        "is_sunday": dt.date.today().weekday() == 6,  # SUNDAY_REVIEW=on：周日日报变体（本周完成/遗留/模式/下周建议）
+        "today": today_s,
+        "is_sunday": today.weekday() == 6,  # SUNDAY_REVIEW=on：周日日报变体（本周完成/遗留/模式/下周建议）
         "processed": processed,
         "pending": pending,
         # D2（P2-2）：周聚合（is_sunday=true 时 Agent 消费；结构稳定始终输出）
-        "week": collect_week(),
+        "week": collect_week(today),
     }
 
 
-def validate_report_data(d: dict) -> bool:
-    """P0-4（B5）+ D2（P2-2）：输出契约 schema 校验（PRD §4.5）。week 为 D2 扩展字段（旧字段保留）。"""
+def validate_report_data(d: dict) -> dict:
+    """P0-4（B5）+ D2（P2-2）：输出契约 schema 校验 + 事实校验。
+
+    Returns {"schema_ok": bool, "facts_ok": bool, "issues": [str]}.
+    """
     week = d.get("week")
-    return (
+    schema_ok = (
         isinstance(d, dict)
         and isinstance(d.get("today"), str)
         and isinstance(d.get("is_sunday"), bool)
@@ -201,6 +305,24 @@ def validate_report_data(d: dict) -> bool:
         and isinstance(week.get("due_next_week"), int)
         and isinstance(week.get("blocked_count"), int)
     )
+    issues: list[str] = []
+    for item in d.get("pending", []):
+        if not isinstance(item, dict):
+            issues.append("pending 项不是对象")
+            continue
+        title = str(item.get("title") or "")
+        if _DATE_TITLE.match(title):
+            issues.append(f"pending 含日期文件名伪条目: {title}")
+        if _CATEGORY_HEADING.match(title):
+            issues.append(f"pending 含分类标题伪条目: {title}")
+    for title in d.get("processed", []):
+        if _CATEGORY_HEADING.match(str(title)):
+            issues.append(f"processed 含分类标题伪条目: {title}")
+    if isinstance(week, dict):
+        for title in week.get("completed", []):
+            if _CATEGORY_HEADING.match(str(title)):
+                issues.append(f"week.completed 含分类标题伪条目: {title}")
+    return {"schema_ok": schema_ok, "facts_ok": not issues, "issues": issues}
 
 
 def main() -> int:
@@ -210,18 +332,29 @@ def main() -> int:
         action="store_true",
         help="P0-4（B5）数据采集模式：输出 JSON 供 Agent cron prompt 消费（判断型生成），不输出模板",
     )
+    ap.add_argument(
+        "--date",
+        help="固定日期 YYYY-MM-DD（dry-run / 历史回放；不冻结 TODAY 于 import）",
+    )
     args = ap.parse_args()
 
-    data = collect()
+    data = collect(args.date)
+    today_s = str(data["today"])
+    validation = validate_report_data(data)
     if args.data:
-        if not validate_report_data(data):
+        if not validation["schema_ok"] or not validation["facts_ok"]:
             return 1
+        data["data_validated"] = validation["schema_ok"] and validation["facts_ok"]
+        data["factual_validation"] = {
+            "ok": validation["facts_ok"],
+            "issues": validation["issues"],
+        }
         print(json.dumps(data, ensure_ascii=False))
         return 0
 
     processed = data["processed"]
     pending = data["pending"]
-    lines = [f"📋 今日处理日报（{TODAY}）", ""]
+    lines = [f"📋 今日处理日报（{today_s}）", ""]
     lines.append(f"✅ 已处理（{len(processed)} 条）")
     for i, title in enumerate(processed, 1):
         lines.append(f"  {i}. {title}")
