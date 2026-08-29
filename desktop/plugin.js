@@ -1042,7 +1042,16 @@ import { useEffect, useMemo as useMemo2, useReducer, useState as useState2 } fro
 // desktop-src/home-model.ts
 var HOME_VIEW_INITIAL_STATE = { showAllRegionId: null };
 function homeViewStateReducer(_state, action) {
-  return action.type === "show-all" ? { showAllRegionId: action.regionId } : HOME_VIEW_INITIAL_STATE;
+  switch (action.type) {
+    case "show-all":
+      return { showAllRegionId: action.regionId };
+    case "open-archive":
+      return { showAllRegionId: null, archiveOpen: true };
+    case "back":
+      return HOME_VIEW_INITIAL_STATE;
+    default:
+      return _state;
+  }
 }
 function buildHomeViewPresentation(model, state, previewLimit = 8) {
   const regions = model.regions.map((region) => ({
@@ -1052,12 +1061,15 @@ function buildHomeViewPresentation(model, state, previewLimit = 8) {
   }));
   const expandedSource = state.showAllRegionId ? model.regions.find((region) => region.id === state.showAllRegionId) ?? null : null;
   const expandedRegion = expandedSource ? { ...expandedSource, visibleItems: expandedSource.items, canShowAll: false } : null;
+  const archiveOpen = state.archiveOpen === true;
   return {
-    mode: expandedRegion ? "expanded" : "home",
+    mode: archiveOpen ? "archive" : expandedRegion ? "expanded" : "home",
     regions,
-    expandedRegion,
+    expandedRegion: archiveOpen ? null : expandedRegion,
     contractErrorBannerVisible: model.contractErrors.length > 0,
-    legacyFallbackVisible: true
+    legacyFallbackVisible: true,
+    archiveEntryVisible: true,
+    archive: archiveOpen ? model.archive : null
   };
 }
 var REVIEWABLE_SECTIONS = /* @__PURE__ */ new Set(["thought", "video", "psych", "dream"]);
@@ -1171,8 +1183,22 @@ function buildHomeModel(board, _brief, _health) {
       attention: { needsDecision, failures, total: attentionItems.length },
       recent: recentRegion.count,
       contractErrors: contractErrors.length
-    }
+    },
+    // WB-S1-041：完整 done/trash 只读归档模型（复用同一 /board sections，
+    // 聚合所有同 key sections；不在 HomeModel 中复制数据库/新增 schema/API）。
+    archive: buildArchiveModel(board)
   };
+}
+function buildArchiveModel(board) {
+  const collect = (partition) => {
+    const entries = [];
+    for (const section of board.sections ?? []) {
+      if (section.key !== partition) continue;
+      for (const card of section.files ?? []) entries.push({ card, partition });
+    }
+    return { count: entries.length, entries };
+  };
+  return { done: collect("done"), trash: collect("trash") };
 }
 
 // desktop-src/card-action.ts
@@ -1384,6 +1410,57 @@ function HomeAllRegionList({ region, onBack, onPreview }) {
     /* @__PURE__ */ jsx3("div", { className: "flex flex-col gap-1.5", children: region.visibleItems.map(({ card }) => /* @__PURE__ */ jsx3(TodayCardRow, { card, onPreview }, `${card.dir}/${card.file}`)) })
   ] });
 }
+function HomeArchiveView({ archive, onBack, onPreview }) {
+  return /* @__PURE__ */ jsxs3("div", { className: "flex flex-1 flex-col gap-2 overflow-y-auto px-3 pb-3", children: [
+    /* @__PURE__ */ jsxs3("div", { className: "flex items-center gap-2 pt-2", children: [
+      /* @__PURE__ */ jsx3(
+        "button",
+        {
+          type: "button",
+          "data-wb-archive-back": true,
+          className: "rounded border border-(--ui-stroke-secondary) px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary)",
+          onClick: onBack,
+          children: "← 返回首页"
+        }
+      ),
+      /* @__PURE__ */ jsx3("span", { className: "text-[0.8125rem] font-semibold text-(--ui-text-primary)", children: "归档 / 回收站 · 全部" }),
+      /* @__PURE__ */ jsxs3("span", { className: "text-[0.75rem] tabular-nums text-(--ui-text-quaternary)", children: [
+        "已归档 ",
+        archive.done.count,
+        " · 回收站 ",
+        archive.trash.count
+      ] })
+    ] }),
+    /* @__PURE__ */ jsxs3("section", { className: "flex min-w-0 flex-col gap-1.5 rounded-lg border border-(--ui-stroke-secondary) p-2.5", children: [
+      /* @__PURE__ */ jsxs3("div", { className: "flex items-center gap-1.5", children: [
+        /* @__PURE__ */ jsx3("span", { className: "text-[0.8125rem] font-semibold text-(--ui-text-primary)", children: "已完成归档" }),
+        /* @__PURE__ */ jsx3("span", { className: "rounded bg-(--ui-bg-quinary) px-1 py-0.5 text-[0.6875rem] text-(--ui-text-quaternary)", children: "done 分区 · 完整列表" }),
+        /* @__PURE__ */ jsxs3("span", { className: "text-[0.75rem] tabular-nums text-(--ui-text-quaternary)", children: [
+          archive.done.count,
+          " 项"
+        ] })
+      ] }),
+      archive.done.entries.length === 0 ? /* @__PURE__ */ jsx3("div", { className: "rounded-md border border-dashed border-(--ui-stroke-tertiary) px-3 py-4 text-center text-[0.75rem] text-(--ui-text-quaternary)", children: "暂无已完成归档 —— 处理完的条目归档后会出现在这里" }) : /* @__PURE__ */ jsx3("div", { className: "flex flex-col gap-1.5", children: archive.done.entries.map(({ card }) => /* @__PURE__ */ jsxs3("div", { className: "flex items-center gap-1", children: [
+        /* @__PURE__ */ jsx3(TodayCardRow, { card, onPreview }),
+        /* @__PURE__ */ jsx3("span", { className: "shrink-0 rounded bg-(--ui-bg-quinary) px-1 py-0.5 text-[0.6875rem] text-(--ui-text-quaternary)", children: card.dir })
+      ] }, `${card.dir}/${card.file}`)) })
+    ] }),
+    /* @__PURE__ */ jsxs3("section", { className: "flex min-w-0 flex-col gap-1.5 rounded-lg border border-(--ui-stroke-secondary) p-2.5", children: [
+      /* @__PURE__ */ jsxs3("div", { className: "flex items-center gap-1.5", children: [
+        /* @__PURE__ */ jsx3("span", { className: "text-[0.8125rem] font-semibold text-(--ui-text-primary)", children: "回收站" }),
+        /* @__PURE__ */ jsx3("span", { className: "rounded bg-(--ui-bg-quinary) px-1 py-0.5 text-[0.6875rem] text-(--ui-text-quaternary)", children: "trash 分区 · 完整列表" }),
+        /* @__PURE__ */ jsxs3("span", { className: "text-[0.75rem] tabular-nums text-(--ui-text-quaternary)", children: [
+          archive.trash.count,
+          " 项"
+        ] })
+      ] }),
+      archive.trash.entries.length === 0 ? /* @__PURE__ */ jsx3("div", { className: "rounded-md border border-dashed border-(--ui-stroke-tertiary) px-3 py-4 text-center text-[0.75rem] text-(--ui-text-quaternary)", children: "回收站是空的" }) : /* @__PURE__ */ jsx3("div", { className: "flex flex-col gap-1.5", children: archive.trash.entries.map(({ card }) => /* @__PURE__ */ jsxs3("div", { className: "flex items-center gap-1", children: [
+        /* @__PURE__ */ jsx3(TodayCardRow, { card, onPreview }),
+        /* @__PURE__ */ jsx3("span", { className: "shrink-0 rounded bg-(--ui-bg-quinary) px-1 py-0.5 text-[0.6875rem] text-(--ui-text-quaternary)", children: card.dir })
+      ] }, `${card.dir}/${card.file}`)) })
+    ] })
+  ] });
+}
 var HOME_EMPTY_HINTS = {
   today: "今天没有安排 🎉 手机转发到 QQ 群会自动收录进工作台",
   inbox: "待审核是空的——手机收进来的内容会先出现在这里等你过目",
@@ -1504,7 +1581,17 @@ function HomeView({ board, onPreview, onOpenLegacy }) {
       " 个条目的状态无法识别，已按契约隔离未显示在任何区。 请通过「旧版数据」查看原始状态并修正 frontmatter status 字段。"
     ] }),
     presentation.legacyFallbackVisible && /* @__PURE__ */ jsx3("div", { className: "mt-1 flex justify-end px-1", children: /* @__PURE__ */ jsx3("button", { "data-wb-legacy-fallback": true, className: "text-[0.75rem] text-(--ui-accent) hover:underline", onClick: onOpenLegacy, type: "button", children: "旧版数据 →" }) }),
-    presentation.mode === "expanded" && showAllRegion ? /* @__PURE__ */ jsx3(HomeAllRegionList, { region: showAllRegion, onBack: () => dispatchView({ type: "back" }), onPreview }) : /* @__PURE__ */ jsxs3("div", { className: "grid grid-cols-1 gap-3 py-3 lg:grid-cols-3", children: [
+    presentation.archiveEntryVisible && presentation.mode !== "archive" && /* @__PURE__ */ jsx3("div", { className: "mt-1 flex justify-end px-1", children: /* @__PURE__ */ jsx3(
+      "button",
+      {
+        type: "button",
+        "data-wb-archive-entry": true,
+        className: "text-[0.75rem] text-(--ui-accent) hover:underline",
+        onClick: () => dispatchView({ type: "open-archive" }),
+        children: "归档 / 回收站 →"
+      }
+    ) }),
+    presentation.mode === "expanded" && showAllRegion ? /* @__PURE__ */ jsx3(HomeAllRegionList, { region: showAllRegion, onBack: () => dispatchView({ type: "back" }), onPreview }) : presentation.mode === "archive" && presentation.archive ? /* @__PURE__ */ jsx3(HomeArchiveView, { archive: presentation.archive, onBack: () => dispatchView({ type: "back" }), onPreview }) : /* @__PURE__ */ jsxs3("div", { className: "grid grid-cols-1 gap-3 py-3 lg:grid-cols-3", children: [
       mainRegions.map((region) => /* @__PURE__ */ jsxs3("section", { className: "flex min-w-0 flex-col gap-1.5 rounded-lg border border-(--ui-stroke-secondary) p-2.5", children: [
         /* @__PURE__ */ jsxs3("div", { className: "flex items-center gap-1.5", children: [
           /* @__PURE__ */ jsx3("span", { className: "text-[0.8125rem] font-semibold text-(--ui-text-primary)", children: region.id === "today" ? "今日" : region.id === "inbox" ? "待审核" : "需要注意" }),

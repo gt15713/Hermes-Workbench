@@ -112,3 +112,27 @@ test('WB-S1-036: legacy fallback is top-level and remains visible in expanded mo
   assert.ok(fallbackIdx !== -1 && branchIdx !== -1 && fallbackIdx < branchIdx)
   assert.doesNotMatch(home, /sections\.find\(s => s\.key === 'task'\)/)
 })
+
+// ── WB-S1-041：FR-040 生产接线结构契约（行为 seam 在 archive-view.test.ts）────
+test('WB-S1-041: Home renders archive entry, archive view, return button and honest empty states', () => {
+  assert.match(home, /data-wb-archive-entry/)
+  assert.match(home, /data-wb-archive-back/)
+  assert.match(home, /function HomeArchiveView/)
+  assert.match(home, /归档 \/ 回收站 · 全部/)
+  assert.match(home, /暂无已完成归档/)
+  assert.match(home, /回收站是空的/)
+  assert.match(home, /dispatchView\(\{ type: 'open-archive' \}\)/)
+  assert.match(home, /presentation\.mode === 'archive'/)
+})
+
+test('WB-S1-041: archive mode keeps fail-closed banner reachable; legacy fallback stays top-level', () => {
+  assert.match(home, /状态无法识别/)
+  assert.match(home, /data-wb-legacy-fallback/)
+  assert.match(model, /archiveOpen/)
+  const bannerIdx = home.indexOf('状态无法识别')
+  const archModeIdx = home.indexOf("presentation.mode === 'archive'")
+  const legacyIdx = home.indexOf('data-wb-legacy-fallback')
+  const entryIdx = home.indexOf('data-wb-archive-entry')
+  assert.ok(bannerIdx !== -1 && archModeIdx !== -1, 'banner and archive branch must both exist')
+  assert.ok(legacyIdx !== -1 && entryIdx !== -1, 'legacy fallback and archive entry must both render')
+})

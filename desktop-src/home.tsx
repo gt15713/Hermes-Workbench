@@ -19,6 +19,7 @@ import {
   buildHomeModel,
   buildHomeViewPresentation,
   homeViewStateReducer,
+  type ArchiveModel,
   type HomeRegionId,
   type HomeRegionPresentation,
 } from './home-model'
@@ -190,6 +191,78 @@ function HomeAllRegionList({ region, onBack, onPreview }: {
   )
 }
 
+/** WB-S1-041：归档 / 回收站完整只读浏览（FR-040 生产接线）。
+ *  生产 seam：HomeView 顶层「归档 / 回收站」入口 → 生产 reducer open-archive →
+ *  presentation.archive；独立展示完整 done 与 trash（计数 + 来源 + 诚实空态，
+ *  不截断），可返回首页且四区预览顺序不变；不新增 restore/delete/物理删除
+ *  操作，不改 schema/API/数据库；旧 Board/Table 不删除不隐藏。 */
+function HomeArchiveView({ archive, onBack, onPreview }: {
+  archive: ArchiveModel
+  onBack: () => void
+  onPreview: (c: WbCard) => void
+}) {
+  return (
+    <div className="flex flex-1 flex-col gap-2 overflow-y-auto px-3 pb-3">
+      <div className="flex items-center gap-2 pt-2">
+        <button
+          type="button"
+          data-wb-archive-back
+          className="rounded border border-(--ui-stroke-secondary) px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary)"
+          onClick={onBack}
+        >
+          ← 返回首页
+        </button>
+        <span className="text-[0.8125rem] font-semibold text-(--ui-text-primary)">归档 / 回收站 · 全部</span>
+        <span className="text-[0.75rem] tabular-nums text-(--ui-text-quaternary)">
+          已归档 {archive.done.count} · 回收站 {archive.trash.count}
+        </span>
+      </div>
+      <section className="flex min-w-0 flex-col gap-1.5 rounded-lg border border-(--ui-stroke-secondary) p-2.5">
+        <div className="flex items-center gap-1.5">
+          <span className="text-[0.8125rem] font-semibold text-(--ui-text-primary)">已完成归档</span>
+          <span className="rounded bg-(--ui-bg-quinary) px-1 py-0.5 text-[0.6875rem] text-(--ui-text-quaternary)">done 分区 · 完整列表</span>
+          <span className="text-[0.75rem] tabular-nums text-(--ui-text-quaternary)">{archive.done.count} 项</span>
+        </div>
+        {archive.done.entries.length === 0 ? (
+          <div className="rounded-md border border-dashed border-(--ui-stroke-tertiary) px-3 py-4 text-center text-[0.75rem] text-(--ui-text-quaternary)">
+            暂无已完成归档 —— 处理完的条目归档后会出现在这里
+          </div>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            {archive.done.entries.map(({ card }) => (
+              <div key={`${card.dir}/${card.file}`} className="flex items-center gap-1">
+                <TodayCardRow card={card} onPreview={onPreview} />
+                <span className="shrink-0 rounded bg-(--ui-bg-quinary) px-1 py-0.5 text-[0.6875rem] text-(--ui-text-quaternary)">{card.dir}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+      <section className="flex min-w-0 flex-col gap-1.5 rounded-lg border border-(--ui-stroke-secondary) p-2.5">
+        <div className="flex items-center gap-1.5">
+          <span className="text-[0.8125rem] font-semibold text-(--ui-text-primary)">回收站</span>
+          <span className="rounded bg-(--ui-bg-quinary) px-1 py-0.5 text-[0.6875rem] text-(--ui-text-quaternary)">trash 分区 · 完整列表</span>
+          <span className="text-[0.75rem] tabular-nums text-(--ui-text-quaternary)">{archive.trash.count} 项</span>
+        </div>
+        {archive.trash.entries.length === 0 ? (
+          <div className="rounded-md border border-dashed border-(--ui-stroke-tertiary) px-3 py-4 text-center text-[0.75rem] text-(--ui-text-quaternary)">
+            回收站是空的
+          </div>
+        ) : (
+          <div className="flex flex-col gap-1.5">
+            {archive.trash.entries.map(({ card }) => (
+              <div key={`${card.dir}/${card.file}`} className="flex items-center gap-1">
+                <TodayCardRow card={card} onPreview={onPreview} />
+                <span className="shrink-0 rounded bg-(--ui-bg-quinary) px-1 py-0.5 text-[0.6875rem] text-(--ui-text-quaternary)">{card.dir}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+    </div>
+  )
+}
+
 /** 各区域专属空状态文案 —— 空 ≠ 加载 ≠ 失败，四种反馈互不复用。 */
 const HOME_EMPTY_HINTS: Record<string, string> = {
   today: '今天没有安排 🎉 手机转发到 QQ 群会自动收录进工作台',
@@ -357,8 +430,23 @@ export function HomeView({ board, onPreview, onOpenLegacy }: {
         </div>
       )}
 
+      {presentation.archiveEntryVisible && presentation.mode !== 'archive' && (
+        <div className="mt-1 flex justify-end px-1">
+          <button
+            type="button"
+            data-wb-archive-entry
+            className="text-[0.75rem] text-(--ui-accent) hover:underline"
+            onClick={() => dispatchView({ type: 'open-archive' })}
+          >
+            归档 / 回收站 →
+          </button>
+        </div>
+      )}
+
       {presentation.mode === 'expanded' && showAllRegion ? (
         <HomeAllRegionList region={showAllRegion} onBack={() => dispatchView({ type: 'back' })} onPreview={onPreview} />
+      ) : presentation.mode === 'archive' && presentation.archive ? (
+        <HomeArchiveView archive={presentation.archive} onBack={() => dispatchView({ type: 'back' })} onPreview={onPreview} />
       ) : (
       <div className="grid grid-cols-1 gap-3 py-3 lg:grid-cols-3">
         {mainRegions.map(region => (

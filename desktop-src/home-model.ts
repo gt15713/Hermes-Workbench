@@ -73,15 +73,21 @@ export interface HomeModel {
     recent: number
     contractErrors: number
   }
+  /** WB-S1-041：完整 done/trash 只读归档模型（聚合所有同 key sections，保持后端顺序与来源）。 */
+  archive: ArchiveModel
 }
 
 /** WB-S1-036：HomeView 展开状态与实际可见输出的最小生产 seam。 */
+/** WB-S1-041：archiveOpen 让 Home 生产 seam 支持「归档/回收站」完整浏览模式。 */
 export interface HomeViewState {
   showAllRegionId: HomeRegionId | null
+  /** WB-S1-041：true = 进入归档/回收站完整浏览模式（与展开互斥）。 */
+  archiveOpen?: boolean
 }
 
 export type HomeViewAction =
   | { type: 'show-all'; regionId: HomeRegionId }
+  | { type: 'open-archive' }
   | { type: 'back' }
 
 export const HOME_VIEW_INITIAL_STATE: HomeViewState = { showAllRegionId: null }
@@ -92,18 +98,29 @@ export interface HomeRegionPresentation extends HomeRegion {
 }
 
 export interface HomeViewPresentation {
-  mode: 'home' | 'expanded'
+  mode: 'home' | 'expanded' | 'archive'
   regions: HomeRegionPresentation[]
   expandedRegion: HomeRegionPresentation | null
   contractErrorBannerVisible: boolean
   /** 兼容入口在 Home 顶层渲染，预览与展开状态都必须可点击。 */
   legacyFallbackVisible: true
+  /** WB-S1-041：Home 顶层「归档 / 回收站」入口在 home/expanded 模式可见。 */
+  archiveEntryVisible: boolean
+  /** WB-S1-041：进入 archive 模式后的完整 done/trash 只读模型；非 archive 模式为 null。 */
+  archive: ArchiveModel | null
 }
 
 export function homeViewStateReducer(_state: HomeViewState, action: HomeViewAction): HomeViewState {
-  return action.type === 'show-all'
-    ? { showAllRegionId: action.regionId }
-    : HOME_VIEW_INITIAL_STATE
+  switch (action.type) {
+    case 'show-all':
+      return { showAllRegionId: action.regionId }
+    case 'open-archive':
+      return { showAllRegionId: null, archiveOpen: true }
+    case 'back':
+      return HOME_VIEW_INITIAL_STATE
+    default:
+      return _state
+  }
 }
 
 /**
@@ -126,12 +143,15 @@ export function buildHomeViewPresentation(
   const expandedRegion = expandedSource
     ? { ...expandedSource, visibleItems: expandedSource.items, canShowAll: false }
     : null
+  const archiveOpen = state.archiveOpen === true
   return {
-    mode: expandedRegion ? 'expanded' : 'home',
+    mode: archiveOpen ? 'archive' : expandedRegion ? 'expanded' : 'home',
     regions,
-    expandedRegion,
+    expandedRegion: archiveOpen ? null : expandedRegion,
     contractErrorBannerVisible: model.contractErrors.length > 0,
     legacyFallbackVisible: true,
+    archiveEntryVisible: true,
+    archive: archiveOpen ? model.archive : null,
   }
 }
 
@@ -286,5 +306,48 @@ export function buildHomeModel(
       recent: recentRegion.count,
       contractErrors: contractErrors.length,
     },
+    // WB-S1-041：完整 done/trash 只读归档模型（复用同一 /board sections，
+    // 聚合所有同 key sections；不在 HomeModel 中复制数据库/新增 schema/API）。
+    archive: buildArchiveModel(board),
   }
+}
+
+/**
+ * WB-S1-040 / FR-040：独立归档只读浏览（source/test only）。
+ *
+ * buildHomeModel 把 done 分区语义直通为 recent、trash 整区跳过 —— 这是 Home
+ * 的投影口径，不是完整归档视图。FR-040 要求独立浏览**完整** done 与 trash
+ * partitions（旧版 Board 的完整分区列表能力）。本函数提供最小只读 archive
+ * surface：复用同一 /board sections，不复制数据库、不新增 schema/API，
+ * 不修改输入，不做分区语义猜测（状态分类仍只由 buildHomeModel 负责）。
+ */
+export interface ArchiveEntry {
+  card: WbCard
+  /** 来源分区：'done' = 完成归档分区；'trash' = 回收站分区。 */
+  partition: 'done' | 'trash'
+}
+
+export interface ArchivePartition {
+  count: number
+  entries: ArchiveEntry[]
+}
+
+export interface ArchiveModel {
+  done: ArchivePartition
+  trash: ArchivePartition
+}
+
+export function buildArchiveModel(board: Pick<WbBoard, 'sections'>): ArchiveModel {
+  // WB-S1-041：/board 每一 section 来自一个配置分区（key=type），配置允许
+  // 用户自定义分区且不保证 done/trash 各只有一节 —— 聚合所有同 key sections，
+  // 保持后端顺序（sections 顺序 + 分区内 files 顺序）与来源（card.dir 可溯源）。
+  const collect = (partition: 'done' | 'trash'): ArchivePartition => {
+    const entries: ArchiveEntry[] = []
+    for (const section of board.sections ?? []) {
+      if (section.key !== partition) continue
+      for (const card of section.files ?? []) entries.push({ card, partition })
+    }
+    return { count: entries.length, entries }
+  }
+  return { done: collect('done'), trash: collect('trash') }
 }
