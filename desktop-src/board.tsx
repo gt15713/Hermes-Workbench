@@ -1380,8 +1380,8 @@ export function WorkbenchBoardPage() {
       <div className="flex items-center gap-2 border-b border-(--ui-stroke-secondary) px-3 py-2">
         <Codicon name="checklist" size="1rem" />
         <span className="text-sm font-semibold">工作台</span>
-        {/* P0-1（B4）v2：首页 / 旧版数据 / 消息任务 切换（首页 = 默认） */}
-        <div className="flex items-center rounded-md border border-(--ui-stroke-secondary) p-0.5">
+        {/* WB-S1-030：主导航只保留当前产品面；完整旧数据降为显式兼容入口。 */}
+        <div data-wb-primary-nav className="flex items-center rounded-md border border-(--ui-stroke-secondary) p-0.5">
           <button
             type="button"
             className={cn(
@@ -1396,16 +1396,6 @@ export function WorkbenchBoardPage() {
             type="button"
             className={cn(
               'rounded px-2 py-0.5 text-[0.8125rem] transition-colors',
-              showLegacy && !showConversations ? 'bg-(--ui-accent) text-white' : 'text-(--ui-text-tertiary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-text-primary)'
-            )}
-            onClick={() => { setShowLegacy(true); setShowConversations(false) }}
-          >
-            旧版数据
-          </button>
-          <button
-            type="button"
-            className={cn(
-              'rounded px-2 py-0.5 text-[0.8125rem] transition-colors',
               showConversations ? 'bg-(--ui-accent) text-white' : 'text-(--ui-text-tertiary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-text-primary)'
             )}
             onClick={() => { setShowLegacy(false); setShowConversations(true) }}
@@ -1413,6 +1403,22 @@ export function WorkbenchBoardPage() {
             消息任务
           </button>
         </div>
+        <button
+          data-wb-legacy-entry
+          type="button"
+          title="兼容入口：保留完整列表、项目分组、批量操作与异常状态修复"
+          aria-pressed={showLegacy && !showConversations}
+          className={cn(
+            'inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[0.75rem] transition-colors',
+            showLegacy && !showConversations
+              ? 'bg-(--ui-stroke-secondary) text-(--ui-text-primary)'
+              : 'text-(--ui-text-quaternary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-text-secondary)'
+          )}
+          onClick={() => { setShowLegacy(true); setShowConversations(false) }}
+        >
+          <Codicon name="archive" size="0.65rem" />
+          完整数据（兼容）
+        </button>
         <span className="text-[0.75rem] text-(--ui-text-quaternary)">
           {board.totals.pending} Pending / {board.totals.total} Total
         </span>

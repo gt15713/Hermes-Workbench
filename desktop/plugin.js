@@ -2732,7 +2732,7 @@ function WorkbenchBoardPage() {
     /* @__PURE__ */ jsxs5("div", { className: "flex items-center gap-2 border-b border-(--ui-stroke-secondary) px-3 py-2", children: [
       /* @__PURE__ */ jsx5(Codicon4, { name: "checklist", size: "1rem" }),
       /* @__PURE__ */ jsx5("span", { className: "text-sm font-semibold", children: "工作台" }),
-      /* @__PURE__ */ jsxs5("div", { className: "flex items-center rounded-md border border-(--ui-stroke-secondary) p-0.5", children: [
+      /* @__PURE__ */ jsxs5("div", { "data-wb-primary-nav": true, className: "flex items-center rounded-md border border-(--ui-stroke-secondary) p-0.5", children: [
         /* @__PURE__ */ jsx5(
           "button",
           {
@@ -2754,21 +2754,6 @@ function WorkbenchBoardPage() {
             type: "button",
             className: cn4(
               "rounded px-2 py-0.5 text-[0.8125rem] transition-colors",
-              showLegacy && !showConversations ? "bg-(--ui-accent) text-white" : "text-(--ui-text-tertiary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-text-primary)"
-            ),
-            onClick: () => {
-              setShowLegacy(true);
-              setShowConversations(false);
-            },
-            children: "旧版数据"
-          }
-        ),
-        /* @__PURE__ */ jsx5(
-          "button",
-          {
-            type: "button",
-            className: cn4(
-              "rounded px-2 py-0.5 text-[0.8125rem] transition-colors",
               showConversations ? "bg-(--ui-accent) text-white" : "text-(--ui-text-tertiary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-text-primary)"
             ),
             onClick: () => {
@@ -2779,6 +2764,27 @@ function WorkbenchBoardPage() {
           }
         )
       ] }),
+      /* @__PURE__ */ jsxs5(
+        "button",
+        {
+          "data-wb-legacy-entry": true,
+          type: "button",
+          title: "兼容入口：保留完整列表、项目分组、批量操作与异常状态修复",
+          "aria-pressed": showLegacy && !showConversations,
+          className: cn4(
+            "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[0.75rem] transition-colors",
+            showLegacy && !showConversations ? "bg-(--ui-stroke-secondary) text-(--ui-text-primary)" : "text-(--ui-text-quaternary) hover:bg-(--ui-stroke-secondary) hover:text-(--ui-text-secondary)"
+          ),
+          onClick: () => {
+            setShowLegacy(true);
+            setShowConversations(false);
+          },
+          children: [
+            /* @__PURE__ */ jsx5(Codicon4, { name: "archive", size: "0.65rem" }),
+            "完整数据（兼容）"
+          ]
+        }
+      ),
       /* @__PURE__ */ jsxs5("span", { className: "text-[0.75rem] text-(--ui-text-quaternary)", children: [
         board.totals.pending,
         " Pending / ",
