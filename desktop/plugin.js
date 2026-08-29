@@ -1037,9 +1037,29 @@ function ViewSwitcher({ mode, onChange }) {
 
 // desktop-src/home.tsx
 import { cn as cn3, Codicon as Codicon2, host as host2, useQuery as useQuery2 } from "@hermes/plugin-sdk";
-import { useEffect, useMemo as useMemo2, useState as useState2 } from "react";
+import { useEffect, useMemo as useMemo2, useReducer, useState as useState2 } from "react";
 
 // desktop-src/home-model.ts
+var HOME_VIEW_INITIAL_STATE = { showAllRegionId: null };
+function homeViewStateReducer(_state, action) {
+  return action.type === "show-all" ? { showAllRegionId: action.regionId } : HOME_VIEW_INITIAL_STATE;
+}
+function buildHomeViewPresentation(model, state, previewLimit = 8) {
+  const regions = model.regions.map((region) => ({
+    ...region,
+    visibleItems: region.items.slice(0, previewLimit),
+    canShowAll: region.items.length > previewLimit
+  }));
+  const expandedSource = state.showAllRegionId ? model.regions.find((region) => region.id === state.showAllRegionId) ?? null : null;
+  const expandedRegion = expandedSource ? { ...expandedSource, visibleItems: expandedSource.items, canShowAll: false } : null;
+  return {
+    mode: expandedRegion ? "expanded" : "home",
+    regions,
+    expandedRegion,
+    contractErrorBannerVisible: model.contractErrors.length > 0,
+    legacyFallbackVisible: true
+  };
+}
 var REVIEWABLE_SECTIONS = /* @__PURE__ */ new Set(["thought", "video", "psych", "dream"]);
 var COMPLETED_STATUSES = /* @__PURE__ */ new Set(["completed", "ingested", "accepted", "ignored", "done", "abandoned", "cleared"]);
 var ATTENTION_STATUSES = /* @__PURE__ */ new Set(["waiting_user", "failed"]);
@@ -1091,10 +1111,10 @@ function buildHomeModel(board, _brief, _health) {
           continue;
         }
         if (verdict === "recent") {
-          recentRegion.items.push({ card });
+          recentRegion.items.push({ card, side: "active" });
         } else {
           ;
-          (verdict === "attention" ? attentionItems : verdict === "today" ? todayRegion.items : inboxRegion.items).push({ card });
+          (verdict === "attention" ? attentionItems : verdict === "today" ? todayRegion.items : inboxRegion.items).push({ card, side: "active" });
         }
         continue;
       }
@@ -1104,18 +1124,18 @@ function buildHomeModel(board, _brief, _health) {
         continue;
       }
       if (dest === "inbox") {
-        inboxRegion.items.push({ card });
+        inboxRegion.items.push({ card, side: "active" });
         continue;
       }
       if (dest === "today") {
-        todayRegion.items.push({ card });
+        todayRegion.items.push({ card, side: "active" });
         continue;
       }
       if (dest === "attention") {
-        attentionItems.push({ card });
+        attentionItems.push({ card, side: "active" });
         continue;
       }
-      recentRegion.items.push({ card });
+      recentRegion.items.push({ card, side: section.key === "done" ? "done" : "active" });
     }
   }
   const promoted = [];
@@ -1127,7 +1147,7 @@ function buildHomeModel(board, _brief, _health) {
   if (promoted.length > 0) {
     const promotedSet = new Set(promoted.map(keyOf));
     inboxRegion.items = inboxRegion.items.filter((i) => !promotedSet.has(keyOf(i.card)));
-    for (const c of promoted) todayRegion.items.push({ card: c });
+    for (const c of promoted) todayRegion.items.push({ card: c, side: "active" });
   }
   const needsDecision = attentionItems.filter(({ card }) => {
     const s = (card.status || "").trim().toLowerCase();
@@ -1316,14 +1336,52 @@ function BriefCardView({ card, onAccept, onIgnore }) {
     /* @__PURE__ */ jsx3("span", { className: "shrink-0 rounded bg-(--ui-bg-quinary) px-1 py-0.5 text-[0.75rem] text-(--ui-text-quaternary)", children: "规则建议" })
   ] });
 }
-function HomeRegionCardList({ items, onPreview }) {
+function HomeRegionCardList({ items, totalCount, canShowAll, onPreview, onShowAll }) {
   return /* @__PURE__ */ jsxs3(Fragment3, { children: [
-    items.slice(0, 8).map(({ card }) => /* @__PURE__ */ jsx3(TodayCardRow, { card, onPreview }, `${card.dir}/${card.file}`)),
-    items.length > 8 && /* @__PURE__ */ jsxs3("span", { className: "px-1 text-[0.75rem] text-(--ui-text-quaternary)", children: [
-      "还有 ",
-      items.length - 8,
-      " 项，「旧版数据」里有完整列表"
-    ] })
+    items.map(({ card }) => /* @__PURE__ */ jsx3(TodayCardRow, { card, onPreview }, `${card.dir}/${card.file}`)),
+    canShowAll && /* @__PURE__ */ jsxs3(
+      "button",
+      {
+        type: "button",
+        "data-wb-show-all": true,
+        className: "self-start rounded border border-(--ui-accent)/40 bg-(--ui-accent)/10 px-2 py-1 text-[0.75rem] font-medium text-(--ui-accent) hover:bg-(--ui-accent)/20",
+        onClick: onShowAll,
+        children: [
+          "查看全部 ",
+          totalCount,
+          " 项 →"
+        ]
+      }
+    )
+  ] });
+}
+function HomeAllRegionList({ region, onBack, onPreview }) {
+  const title = region.id === "today" ? "今日" : region.id === "inbox" ? "待审核" : region.id === "attention" ? "需要注意" : "最近完成";
+  const archivedCount = region.id === "recent" ? region.visibleItems.filter((i) => i.side === "done").length : 0;
+  const activeDoneCount = region.id === "recent" ? region.visibleItems.filter((i) => i.side === "active").length : 0;
+  return /* @__PURE__ */ jsxs3("div", { className: "flex flex-1 flex-col gap-2 overflow-y-auto px-3 pb-3", children: [
+    /* @__PURE__ */ jsxs3("div", { className: "flex items-center gap-2 pt-2", children: [
+      /* @__PURE__ */ jsx3(
+        "button",
+        {
+          type: "button",
+          "data-wb-show-all-back": true,
+          className: "rounded border border-(--ui-stroke-secondary) px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary)",
+          onClick: onBack,
+          children: "← 返回首页"
+        }
+      ),
+      /* @__PURE__ */ jsxs3("span", { className: "text-[0.8125rem] font-semibold text-(--ui-text-primary)", children: [
+        title,
+        " · 全部"
+      ] }),
+      /* @__PURE__ */ jsxs3("span", { className: "text-[0.75rem] tabular-nums text-(--ui-text-quaternary)", children: [
+        region.count,
+        " 项"
+      ] }),
+      /* @__PURE__ */ jsx3("span", { className: "rounded bg-(--ui-bg-quinary) px-1 py-0.5 text-[0.6875rem] text-(--ui-text-quaternary)", children: region.id === "recent" ? region.visibleItems.length === 0 ? "最近完成（混合投影）" : `已归档 ${archivedCount} · 已完成未归档 ${activeDoneCount}` : "活动任务（active 侧投影）" })
+    ] }),
+    /* @__PURE__ */ jsx3("div", { className: "flex flex-col gap-1.5", children: region.visibleItems.map(({ card }) => /* @__PURE__ */ jsx3(TodayCardRow, { card, onPreview }, `${card.dir}/${card.file}`)) })
   ] });
 }
 var HOME_EMPTY_HINTS = {
@@ -1334,6 +1392,7 @@ var HOME_EMPTY_HINTS = {
 };
 function HomeView({ board, onPreview, onOpenLegacy }) {
   const [ignored, setIgnored] = useState2(/* @__PURE__ */ new Set());
+  const [viewState, dispatchView] = useReducer(homeViewStateReducer, HOME_VIEW_INITIAL_STATE);
   const { data: brief } = useQuery2({
     queryKey: ["workbench", "brief"],
     queryFn: fetchBrief,
@@ -1341,6 +1400,7 @@ function HomeView({ board, onPreview, onOpenLegacy }) {
   });
   const health = useQuery2({ queryKey: ["workbench", "health"], queryFn: fetchHealth, refetchInterval: 3e4 });
   const model = useMemo2(() => buildHomeModel(board), [board]);
+  const presentation = useMemo2(() => buildHomeViewPresentation(model, viewState), [model, viewState]);
   const acceptBrief = async (card) => {
     if (card.type !== "new_task") return;
     try {
@@ -1380,11 +1440,13 @@ function HomeView({ board, onPreview, onOpenLegacy }) {
     setSearchQ("");
     setDebouncedQ("");
   };
-  const todayRegion = model.regions.find((r) => r.id === "today");
-  const inboxRegion = model.regions.find((r) => r.id === "inbox");
-  const attentionRegion = model.regions.find((r) => r.id === "attention");
-  const recentRegion = model.regions.find((r) => r.id === "recent");
+  const todayRegion = presentation.regions.find((r) => r.id === "today");
+  const inboxRegion = presentation.regions.find((r) => r.id === "inbox");
+  const attentionRegion = presentation.regions.find((r) => r.id === "attention");
+  const recentRegion = presentation.regions.find((r) => r.id === "recent");
   const mainRegions = [todayRegion, inboxRegion, attentionRegion];
+  const showAllRegion = presentation.expandedRegion;
+  const openShowAll = (regionId) => dispatchView({ type: "show-all", regionId });
   const healthState = health.isLoading ? "loading" : health.error ? "unreachable" : !health.data || health.data.status === "green" || health.data.status === "disabled" ? "ok" : "degraded";
   return /* @__PURE__ */ jsxs3("div", { className: "flex flex-1 flex-col overflow-y-auto px-3 pb-3", children: [
     /* @__PURE__ */ jsx3("p", { className: "mt-2 px-1 text-[0.8125rem] text-(--ui-text-tertiary)", children: "手机收进来的东西，在这里审核、继续、沉淀。" }),
@@ -1435,13 +1497,14 @@ function HomeView({ board, onPreview, onOpenLegacy }) {
         )
       ] }) })
     ] }),
-    model.contractErrors.length > 0 && /* @__PURE__ */ jsxs3("div", { className: "mt-1 rounded-md border border-[#f87171]/40 bg-[#f87171]/10 px-3 py-1.5 text-[0.75rem] text-[#f87171]", children: [
+    presentation.contractErrorBannerVisible && /* @__PURE__ */ jsxs3("div", { className: "mt-1 rounded-md border border-[#f87171]/40 bg-[#f87171]/10 px-3 py-1.5 text-[0.75rem] text-[#f87171]", children: [
       /* @__PURE__ */ jsx3(Codicon2, { name: "warning", size: "0.75rem", className: "mr-1 inline" }),
       "有 ",
       model.contractErrors.length,
       " 个条目的状态无法识别，已按契约隔离未显示在任何区。 请通过「旧版数据」查看原始状态并修正 frontmatter status 字段。"
     ] }),
-    /* @__PURE__ */ jsxs3("div", { className: "grid grid-cols-1 gap-3 py-3 lg:grid-cols-3", children: [
+    presentation.legacyFallbackVisible && /* @__PURE__ */ jsx3("div", { className: "mt-1 flex justify-end px-1", children: /* @__PURE__ */ jsx3("button", { "data-wb-legacy-fallback": true, className: "text-[0.75rem] text-(--ui-accent) hover:underline", onClick: onOpenLegacy, type: "button", children: "旧版数据 →" }) }),
+    presentation.mode === "expanded" && showAllRegion ? /* @__PURE__ */ jsx3(HomeAllRegionList, { region: showAllRegion, onBack: () => dispatchView({ type: "back" }), onPreview }) : /* @__PURE__ */ jsxs3("div", { className: "grid grid-cols-1 gap-3 py-3 lg:grid-cols-3", children: [
       mainRegions.map((region) => /* @__PURE__ */ jsxs3("section", { className: "flex min-w-0 flex-col gap-1.5 rounded-lg border border-(--ui-stroke-secondary) p-2.5", children: [
         /* @__PURE__ */ jsxs3("div", { className: "flex items-center gap-1.5", children: [
           /* @__PURE__ */ jsx3("span", { className: "text-[0.8125rem] font-semibold text-(--ui-text-primary)", children: region.id === "today" ? "今日" : region.id === "inbox" ? "待审核" : "需要注意" }),
@@ -1451,7 +1514,16 @@ function HomeView({ board, onPreview, onOpenLegacy }) {
             model.totals.attention.failures
           ] })
         ] }),
-        region.items.length === 0 ? /* @__PURE__ */ jsx3("div", { className: "rounded-md border border-dashed border-(--ui-stroke-tertiary) px-3 py-4 text-center text-[0.75rem] text-(--ui-text-quaternary)", children: HOME_EMPTY_HINTS[region.id] }) : /* @__PURE__ */ jsx3(HomeRegionCardList, { items: region.items, onPreview })
+        region.visibleItems.length === 0 ? /* @__PURE__ */ jsx3("div", { className: "rounded-md border border-dashed border-(--ui-stroke-tertiary) px-3 py-4 text-center text-[0.75rem] text-(--ui-text-quaternary)", children: HOME_EMPTY_HINTS[region.id] }) : /* @__PURE__ */ jsx3(
+          HomeRegionCardList,
+          {
+            items: region.visibleItems,
+            totalCount: region.items.length,
+            canShowAll: region.canShowAll,
+            onPreview,
+            onShowAll: () => openShowAll(region.id)
+          }
+        )
       ] }, region.id)),
       healthState !== "ok" && /* @__PURE__ */ jsxs3(
         "div",
@@ -1467,10 +1539,18 @@ function HomeView({ board, onPreview, onOpenLegacy }) {
       /* @__PURE__ */ jsxs3("section", { className: "flex min-w-0 flex-col gap-1.5 rounded-lg border border-(--ui-stroke-secondary) p-2.5 lg:col-span-3", children: [
         /* @__PURE__ */ jsxs3("div", { className: "flex items-center gap-1.5", children: [
           /* @__PURE__ */ jsx3("span", { className: "text-[0.8125rem] font-semibold text-(--ui-text-primary)", children: "最近完成" }),
-          /* @__PURE__ */ jsx3("span", { className: "text-[0.75rem] tabular-nums text-(--ui-text-quaternary)", children: recentRegion.count }),
-          /* @__PURE__ */ jsx3("button", { className: "ml-auto text-[0.75rem] text-(--ui-accent) hover:underline", onClick: onOpenLegacy, type: "button", children: "旧版数据 →" })
+          /* @__PURE__ */ jsx3("span", { className: "text-[0.75rem] tabular-nums text-(--ui-text-quaternary)", children: recentRegion.count })
         ] }),
-        recentRegion.items.length === 0 ? /* @__PURE__ */ jsx3("div", { className: "rounded-md border border-dashed border-(--ui-stroke-tertiary) px-3 py-4 text-center text-[0.75rem] text-(--ui-text-quaternary)", children: HOME_EMPTY_HINTS.recent }) : /* @__PURE__ */ jsx3(HomeRegionCardList, { items: [...recentRegion.items].reverse(), onPreview })
+        recentRegion.visibleItems.length === 0 ? /* @__PURE__ */ jsx3("div", { className: "rounded-md border border-dashed border-(--ui-stroke-tertiary) px-3 py-4 text-center text-[0.75rem] text-(--ui-text-quaternary)", children: HOME_EMPTY_HINTS.recent }) : /* @__PURE__ */ jsx3(
+          HomeRegionCardList,
+          {
+            items: recentRegion.visibleItems,
+            totalCount: recentRegion.items.length,
+            canShowAll: recentRegion.canShowAll,
+            onPreview,
+            onShowAll: () => openShowAll("recent")
+          }
+        )
       ] }),
       /* @__PURE__ */ jsxs3("section", { className: "flex flex-col gap-1.5 lg:col-span-3", children: [
         /* @__PURE__ */ jsxs3("div", { className: "flex items-center gap-1.5", children: [

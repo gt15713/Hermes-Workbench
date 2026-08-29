@@ -31,6 +31,8 @@ export type HomeRegionId = 'today' | 'inbox' | 'attention' | 'recent'
 
 export interface HomeItem {
   card: WbCard
+  /** WB-S1-035：来源侧 provenance —— 'done'=已归档到 done 分区；'active'=已完成但仍留在活动分区。 */
+  side: 'done' | 'active'
 }
 
 export interface HomeRegion {
@@ -70,6 +72,66 @@ export interface HomeModel {
     attention: HomeAttentionCount
     recent: number
     contractErrors: number
+  }
+}
+
+/** WB-S1-036：HomeView 展开状态与实际可见输出的最小生产 seam。 */
+export interface HomeViewState {
+  showAllRegionId: HomeRegionId | null
+}
+
+export type HomeViewAction =
+  | { type: 'show-all'; regionId: HomeRegionId }
+  | { type: 'back' }
+
+export const HOME_VIEW_INITIAL_STATE: HomeViewState = { showAllRegionId: null }
+
+export interface HomeRegionPresentation extends HomeRegion {
+  visibleItems: HomeItem[]
+  canShowAll: boolean
+}
+
+export interface HomeViewPresentation {
+  mode: 'home' | 'expanded'
+  regions: HomeRegionPresentation[]
+  expandedRegion: HomeRegionPresentation | null
+  contractErrorBannerVisible: boolean
+  /** 兼容入口在 Home 顶层渲染，预览与展开状态都必须可点击。 */
+  legacyFallbackVisible: true
+}
+
+export function homeViewStateReducer(_state: HomeViewState, action: HomeViewAction): HomeViewState {
+  return action.type === 'show-all'
+    ? { showAllRegionId: action.regionId }
+    : HOME_VIEW_INITIAL_STATE
+}
+
+/**
+ * 从唯一 buildHomeModel 事实源导出 HomeView 的实际可见项。
+ * 测试与 React 视图共同调用，避免测试复刻 slice/排序算法。
+ */
+export function buildHomeViewPresentation(
+  model: HomeModel,
+  state: HomeViewState,
+  previewLimit = 8,
+): HomeViewPresentation {
+  const regions = model.regions.map(region => ({
+    ...region,
+    visibleItems: region.items.slice(0, previewLimit),
+    canShowAll: region.items.length > previewLimit,
+  }))
+  const expandedSource = state.showAllRegionId
+    ? model.regions.find(region => region.id === state.showAllRegionId) ?? null
+    : null
+  const expandedRegion = expandedSource
+    ? { ...expandedSource, visibleItems: expandedSource.items, canShowAll: false }
+    : null
+  return {
+    mode: expandedRegion ? 'expanded' : 'home',
+    regions,
+    expandedRegion,
+    contractErrorBannerVisible: model.contractErrors.length > 0,
+    legacyFallbackVisible: true,
   }
 }
 
@@ -155,10 +217,11 @@ export function buildHomeModel(
           continue
         }
         if (verdict === 'recent') {
-          recentRegion.items.push({ card })
+          // 聚合分区均为活动分区（thought/video/psych/dream），不可能来自 done 分区
+          recentRegion.items.push({ card, side: 'active' })
         } else {
           // today/attention 语义理论上不出现在聚合分区，但若出现按原语义落位
-          ;(verdict === 'attention' ? attentionItems : verdict === 'today' ? todayRegion.items : inboxRegion.items).push({ card })
+          ;(verdict === 'attention' ? attentionItems : verdict === 'today' ? todayRegion.items : inboxRegion.items).push({ card, side: 'active' })
         }
         continue
       }
@@ -170,18 +233,18 @@ export function buildHomeModel(
       }
       if (dest === 'inbox') {
         // 今日到期（due===today）的待办升级进「今日」；其余新进/待办留在待审核
-        inboxRegion.items.push({ card })
+        inboxRegion.items.push({ card, side: 'active' })
         continue
       }
       if (dest === 'today') {
-        todayRegion.items.push({ card })
+        todayRegion.items.push({ card, side: 'active' })
         continue
       }
       if (dest === 'attention') {
-        attentionItems.push({ card })
+        attentionItems.push({ card, side: 'active' })
         continue
       }
-      recentRegion.items.push({ card })
+      recentRegion.items.push({ card, side: section.key === 'done' ? 'done' : 'active' })
     }
   }
 
@@ -195,7 +258,7 @@ export function buildHomeModel(
   if (promoted.length > 0) {
     const promotedSet = new Set(promoted.map(keyOf))
     inboxRegion.items = inboxRegion.items.filter(i => !promotedSet.has(keyOf(i.card)))
-    for (const c of promoted) todayRegion.items.push({ card: c })
+    for (const c of promoted) todayRegion.items.push({ card: c, side: 'active' })
   }
 
   const needsDecision = attentionItems.filter(({ card }) => {

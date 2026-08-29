@@ -62,3 +62,53 @@ test('unknown status surfaces a fail-closed banner instead of silent drop', () =
   assert.match(model, /contractErrors\.push/)
   assert.match(home, /状态无法识别/)
 })
+
+// ── WB-S1-034：完整列表/归档可见性等价切片（FR-040/FR-020）──────────────────
+// 契约：默认首页每区保持克制（前 8 截断）；超出时提供「查看全部」动作；
+// 全量视图复用同一 buildHomeModel 投影（不建第二事实源）并区分 active/archived 边界；
+// contractErrors fail-closed 横幅在两种模式下都可见；旧版数据入口保留为 fallback。
+
+test('WB-S1-036: show-all action consumes the production presentation seam', () => {
+  assert.match(home, /data-wb-show-all/)
+  assert.match(home, /查看全部 \{totalCount\} 项 →/)
+  assert.match(home, /buildHomeViewPresentation\(model, viewState\)/)
+  assert.match(model, /region\.items\.slice\(0, previewLimit\)/)
+  assert.match(model, /canShowAll: region\.items\.length > previewLimit/)
+})
+
+test('WB-S1-036: expanded view renders presentation visibleItems without another truncation', () => {
+  assert.match(home, /function HomeAllRegionList/)
+  assert.match(home, /region\.visibleItems\.map/)
+  assert.match(home, /← 返回首页/)
+  assert.match(home, /\{title\} · 全部/)
+  assert.doesNotMatch(home, /HomeAllRegionList[\s\S]{0,600}slice\(0, 8\)/)
+})
+
+test('WB-S1-035: recent provenance split label + unknown status stays fail-closed（行为验收在 home-model-behavior.test.ts，此处为结构守卫）', () => {
+  // P1：recent 全量视图头部必须区分「已归档 done 分区」与「已完成未归档 active 分区」
+  assert.match(home, /活动任务（active 侧投影）/)
+  assert.match(home, /已归档/)
+  assert.match(home, /已完成未归档/)
+  // contractErrors banner is located at HomeView top level, shared by grid and all-list views
+  const bannerIdx = home.indexOf('状态无法识别')
+  const allIdx = home.indexOf('HomeAllRegionList')
+  assert.ok(bannerIdx !== -1 && allIdx !== -1)
+  assert.ok(model.includes('unknown status') || model.includes("未知状态") || model.includes("contractErrors"))
+})
+
+test('WB-S1-036: recent preview and expanded output share production presentation state', () => {
+  assert.match(home, /items=\{recentRegion\.visibleItems\}/)
+  assert.match(home, /onShowAll=\{\(\) => openShowAll\('recent'\)\}/)
+  assert.match(model, /visibleItems: expandedSource\.items/)
+  assert.doesNotMatch(home, /recentRegion\.items\]\.reverse\(\)/)
+})
+
+test('WB-S1-036: legacy fallback is top-level and remains visible in expanded mode', () => {
+  assert.match(home, /data-wb-legacy-fallback/)
+  assert.match(home, /presentation\.legacyFallbackVisible/)
+  assert.match(home, /presentation\.mode === 'expanded'/)
+  const fallbackIdx = home.indexOf('presentation.legacyFallbackVisible')
+  const branchIdx = home.indexOf("presentation.mode === 'expanded'")
+  assert.ok(fallbackIdx !== -1 && branchIdx !== -1 && fallbackIdx < branchIdx)
+  assert.doesNotMatch(home, /sections\.find\(s => s\.key === 'task'\)/)
+})

@@ -10,11 +10,18 @@
  */
 
 import { cn, Codicon, host, useQuery } from '@hermes/plugin-sdk'
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useReducer, useState } from 'react'
 
 import { fetchBrief, fetchHealth, fetchSearch, ingestMessage, invalidateBoard, type WbBriefCard } from './api'
 import { homeCardPrimaryAction } from './card-action'
-import { buildHomeModel } from './home-model'
+import {
+  HOME_VIEW_INITIAL_STATE,
+  buildHomeModel,
+  buildHomeViewPresentation,
+  homeViewStateReducer,
+  type HomeRegionId,
+  type HomeRegionPresentation,
+} from './home-model'
 import { healthCheckTone, healthSemanticFor, homeSearchFeedback, searchResultToCard } from './home-search'
 import { isOverdue, priorityMeta, STATUS_TONE, type WbBoard, type WbCard } from './types'
 
@@ -112,18 +119,74 @@ function BriefCardView({ card, onAccept, onIgnore }: { card: WbBriefCard; onAcce
   )
 }
 
-function HomeRegionCardList({ items, onPreview }: { items: { card: WbCard }[]; onPreview: (c: WbCard) => void }) {
+function HomeRegionCardList({ items, totalCount, canShowAll, onPreview, onShowAll }: {
+  items: { card: WbCard }[]
+  totalCount: number
+  canShowAll: boolean
+  onPreview: (c: WbCard) => void
+  onShowAll: () => void
+}) {
   return (
     <>
-      {items.slice(0, 8).map(({ card }) => (
+      {items.map(({ card }) => (
         <TodayCardRow key={`${card.dir}/${card.file}`} card={card} onPreview={onPreview} />
       ))}
-      {items.length > 8 && (
-        <span className="px-1 text-[0.75rem] text-(--ui-text-quaternary)">
-          还有 {items.length - 8} 项，「旧版数据」里有完整列表
-        </span>
+      {canShowAll && (
+        <button
+          type="button"
+          data-wb-show-all
+          className="self-start rounded border border-(--ui-accent)/40 bg-(--ui-accent)/10 px-2 py-1 text-[0.75rem] font-medium text-(--ui-accent) hover:bg-(--ui-accent)/20"
+          onClick={onShowAll}
+        >
+          查看全部 {totalCount} 项 →
+        </button>
       )}
     </>
+  )
+}
+
+/** WB-S1-034/036：全量列表二级视图（FR-040/FR-020 完整列表切片，归档等价仍未关闭）。
+ *  复用同一 buildHomeModel + buildHomeViewPresentation 投影（唯一事实源）；
+ *  首页保持 limit=8 克制，仅在用户点击「查看全部」后由 reducer 进入完整密度。
+ *  recent 诚实混合 done 归档与 active 已完成来源，不把完成误称为已归档；
+ *  未知状态仍 fail-closed 收敛到 contractErrors，由 HomeView 顶层横幅提示。 */
+function HomeAllRegionList({ region, onBack, onPreview }: {
+  region: HomeRegionPresentation
+  onBack: () => void
+  onPreview: (c: WbCard) => void
+}) {
+  const title = region.id === 'today' ? '今日'
+    : region.id === 'inbox' ? '待审核'
+      : region.id === 'attention' ? '需要注意' : '最近完成'
+  const archivedCount = region.id === 'recent' ? region.visibleItems.filter(i => i.side === 'done').length : 0
+  const activeDoneCount = region.id === 'recent' ? region.visibleItems.filter(i => i.side === 'active').length : 0
+  return (
+    <div className="flex flex-1 flex-col gap-2 overflow-y-auto px-3 pb-3">
+      <div className="flex items-center gap-2 pt-2">
+        <button
+          type="button"
+          data-wb-show-all-back
+          className="rounded border border-(--ui-stroke-secondary) px-2 py-1 text-[0.75rem] text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary)"
+          onClick={onBack}
+        >
+          ← 返回首页
+        </button>
+        <span className="text-[0.8125rem] font-semibold text-(--ui-text-primary)">{title} · 全部</span>
+        <span className="text-[0.75rem] tabular-nums text-(--ui-text-quaternary)">{region.count} 项</span>
+        <span className="rounded bg-(--ui-bg-quinary) px-1 py-0.5 text-[0.6875rem] text-(--ui-text-quaternary)">
+          {region.id === 'recent'
+            ? region.visibleItems.length === 0
+              ? '最近完成（混合投影）'
+              : `已归档 ${archivedCount} · 已完成未归档 ${activeDoneCount}`
+            : '活动任务（active 侧投影）'}
+        </span>
+      </div>
+      <div className="flex flex-col gap-1.5">
+        {region.visibleItems.map(({ card }) => (
+          <TodayCardRow key={`${card.dir}/${card.file}`} card={card} onPreview={onPreview} />
+        ))}
+      </div>
+    </div>
   )
 }
 
@@ -149,6 +212,7 @@ export function HomeView({ board, onPreview, onOpenLegacy }: {
   onOpenLegacy: () => void
 }) {
   const [ignored, setIgnored] = useState<Set<string>>(new Set())
+  const [viewState, dispatchView] = useReducer(homeViewStateReducer, HOME_VIEW_INITIAL_STATE)
   const { data: brief } = useQuery({
     queryKey: ['workbench', 'brief'],
     queryFn: fetchBrief,
@@ -157,6 +221,7 @@ export function HomeView({ board, onPreview, onOpenLegacy }: {
   const health = useQuery({ queryKey: ['workbench', 'health'], queryFn: fetchHealth, refetchInterval: 30_000 })
 
   const model = useMemo(() => buildHomeModel(board), [board])
+  const presentation = useMemo(() => buildHomeViewPresentation(model, viewState), [model, viewState])
 
   const acceptBrief = async (card: WbBriefCard) => {
     if (card.type !== 'new_task') return
@@ -200,11 +265,13 @@ export function HomeView({ board, onPreview, onOpenLegacy }: {
     setSearchQ(''); setDebouncedQ('')
   }
 
-  const todayRegion = model.regions.find(r => r.id === 'today')!
-  const inboxRegion = model.regions.find(r => r.id === 'inbox')!
-  const attentionRegion = model.regions.find(r => r.id === 'attention')!
-  const recentRegion = model.regions.find(r => r.id === 'recent')!
+  const todayRegion = presentation.regions.find(r => r.id === 'today')!
+  const inboxRegion = presentation.regions.find(r => r.id === 'inbox')!
+  const attentionRegion = presentation.regions.find(r => r.id === 'attention')!
+  const recentRegion = presentation.regions.find(r => r.id === 'recent')!
   const mainRegions = [todayRegion, inboxRegion, attentionRegion]
+  const showAllRegion = presentation.expandedRegion
+  const openShowAll = (regionId: HomeRegionId) => dispatchView({ type: 'show-all', regionId })
 
   // 健康反馈（Task 6 统一口径）：三色收敛 + unreachable 独立分支
   const healthState: 'loading' | 'ok' | 'degraded' | 'unreachable'
@@ -274,7 +341,7 @@ export function HomeView({ board, onPreview, onOpenLegacy }: {
         )}
       </div>
 
-      {model.contractErrors.length > 0 && (
+      {presentation.contractErrorBannerVisible && (
         <div className="mt-1 rounded-md border border-[#f87171]/40 bg-[#f87171]/10 px-3 py-1.5 text-[0.75rem] text-[#f87171]">
           <Codicon name="warning" size="0.75rem" className="mr-1 inline" />
           有 {model.contractErrors.length} 个条目的状态无法识别，已按契约隔离未显示在任何区。
@@ -282,6 +349,17 @@ export function HomeView({ board, onPreview, onOpenLegacy }: {
         </div>
       )}
 
+      {presentation.legacyFallbackVisible && (
+        <div className="mt-1 flex justify-end px-1">
+          <button data-wb-legacy-fallback className="text-[0.75rem] text-(--ui-accent) hover:underline" onClick={onOpenLegacy} type="button">
+            旧版数据 →
+          </button>
+        </div>
+      )}
+
+      {presentation.mode === 'expanded' && showAllRegion ? (
+        <HomeAllRegionList region={showAllRegion} onBack={() => dispatchView({ type: 'back' })} onPreview={onPreview} />
+      ) : (
       <div className="grid grid-cols-1 gap-3 py-3 lg:grid-cols-3">
         {mainRegions.map(region => (
           <section key={region.id} className="flex min-w-0 flex-col gap-1.5 rounded-lg border border-(--ui-stroke-secondary) p-2.5">
@@ -296,12 +374,18 @@ export function HomeView({ board, onPreview, onOpenLegacy }: {
                 </span>
               )}
             </div>
-            {region.items.length === 0 ? (
+            {region.visibleItems.length === 0 ? (
               <div className="rounded-md border border-dashed border-(--ui-stroke-tertiary) px-3 py-4 text-center text-[0.75rem] text-(--ui-text-quaternary)">
                 {HOME_EMPTY_HINTS[region.id]}
               </div>
             ) : (
-              <HomeRegionCardList items={region.items} onPreview={onPreview} />
+              <HomeRegionCardList
+                items={region.visibleItems}
+                totalCount={region.items.length}
+                canShowAll={region.canShowAll}
+                onPreview={onPreview}
+                onShowAll={() => openShowAll(region.id)}
+              />
             )}
           </section>
         ))}
@@ -324,16 +408,19 @@ export function HomeView({ board, onPreview, onOpenLegacy }: {
           <div className="flex items-center gap-1.5">
             <span className="text-[0.8125rem] font-semibold text-(--ui-text-primary)">最近完成</span>
             <span className="text-[0.75rem] tabular-nums text-(--ui-text-quaternary)">{recentRegion.count}</span>
-            <button className="ml-auto text-[0.75rem] text-(--ui-accent) hover:underline" onClick={onOpenLegacy} type="button">
-              旧版数据 →
-            </button>
           </div>
-          {recentRegion.items.length === 0 ? (
+          {recentRegion.visibleItems.length === 0 ? (
             <div className="rounded-md border border-dashed border-(--ui-stroke-tertiary) px-3 py-4 text-center text-[0.75rem] text-(--ui-text-quaternary)">
               {HOME_EMPTY_HINTS.recent}
             </div>
           ) : (
-            <HomeRegionCardList items={[...recentRegion.items].reverse()} onPreview={onPreview} />
+            <HomeRegionCardList
+              items={recentRegion.visibleItems}
+              totalCount={recentRegion.items.length}
+              canShowAll={recentRegion.canShowAll}
+              onPreview={onPreview}
+              onShowAll={() => openShowAll('recent')}
+            />
           )}
         </section>
 
@@ -360,6 +447,7 @@ export function HomeView({ board, onPreview, onOpenLegacy }: {
           )}
         </section>
       </div>
+      )}
     </div>
   )
 }
