@@ -10,18 +10,28 @@
  */
 
 import { cn, Codicon, host, useQuery } from '@hermes/plugin-sdk'
-import { useEffect, useMemo, useReducer, useState } from 'react'
+import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
 
-import { fetchBrief, fetchHealth, fetchSearch, ingestMessage, invalidateBoard, type WbBriefCard } from './api'
+import { batchAction, fetchBrief, fetchHealth, fetchSearch, ingestMessage, invalidateBoard, type WbBriefCard } from './api'
 import { homeCardPrimaryAction } from './card-action'
 import {
+  HOME_BATCH_ACTION_LABEL,
+  HOME_BATCH_ACTIONS,
   HOME_VIEW_INITIAL_STATE,
+  BatchGate,
+  buildHomeBatchSubmission,
   buildHomeModel,
   buildHomeViewPresentation,
+  computeBatchActionEligibility,
+  guardedSubmit,
+  homeCardSelectionId,
   homeViewStateReducer,
+  settleBatchResponse,
   type ArchiveModel,
+  type HomeBatchAction,
   type HomeRegionId,
   type HomeRegionPresentation,
+  type HomeViewPresentation,
 } from './home-model'
 import { healthCheckTone, healthSemanticFor, homeSearchFeedback, searchResultToCard } from './home-search'
 import { isOverdue, priorityMeta, STATUS_TONE, type WbBoard, type WbCard } from './types'
@@ -40,19 +50,58 @@ const BRIEF_TYPE_META: Record<string, { icon: string; label: string }> = {
   decision: { icon: 'question', label: '需决策' },
 }
 
-function TodayCardRow({ card, onPreview }: { card: WbCard; onPreview: (c: WbCard) => void }) {
+function TodayCardRow({ card, onPreview, multiSelectOpen = false, selected = false, selectable = true, onToggleSelect }: {
+  card: WbCard
+  onPreview: (c: WbCard) => void
+  /** WB-S1-043 / FR-020：true = 多选模式——卡片点击切换选中而非预览；默认界面仍保持每卡一个主动作。 */
+  multiSelectOpen?: boolean
+  selected?: boolean
+  /** WB-S1-044：false = archived done/trash provenance——多选模式下不可选，给诚实只读提示（不静默隐藏卡片）。 */
+  selectable?: boolean
+  onToggleSelect?: (id: string) => void
+}) {
   const tone = STATUS_TONE[card.status] || 'var(--ui-text-tertiary)'
   const prio = priorityMeta(card.priority || '')
   // Task 4（2026-08-27）：一卡一主操作——统一映射给标签；具体动作枢纽在抽屉。
   const primary = homeCardPrimaryAction(card)
+  const selectId = homeCardSelectionId(card)
   return (
     <div
-      className="flex w-full items-center gap-2 rounded-md border border-(--ui-stroke-secondary) px-2.5 py-1.5 transition-colors hover:border-(--ui-accent)"
-      onClick={() => onPreview(card)}
+      className={cn(
+        'flex w-full items-center gap-2 rounded-md border border-(--ui-stroke-secondary) px-2.5 py-1.5 transition-colors hover:border-(--ui-accent)',
+        multiSelectOpen && 'cursor-default',
+        multiSelectOpen && !selectable && 'cursor-not-allowed opacity-60',
+        selected && 'border-(--ui-accent) bg-[color-mix(in_srgb,var(--ui-accent)_10%,transparent)]',
+      )}
+      onClick={() => { if (multiSelectOpen) { if (selectable) onToggleSelect?.(selectId) } else { onPreview(card) } }}
       role="button"
       tabIndex={0}
-      onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPreview(card) } }}
+      onKeyDown={e => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          if (multiSelectOpen) { if (selectable) onToggleSelect?.(selectId) } else { onPreview(card) }
+        }
+      }}
     >
+      {multiSelectOpen && selectable && (
+        <span
+          data-wb-select-indicator
+          className={cn(
+            'flex size-4 shrink-0 items-center justify-center rounded-full border text-[0.6875rem]',
+            selected ? 'border-(--ui-accent) bg-(--ui-accent) text-(--ui-bg-elevated)' : 'border-(--ui-stroke-tertiary)',
+          )}
+        >
+          {selected ? '✓' : ''}
+        </span>
+      )}
+      {multiSelectOpen && !selectable && (
+        <span
+          data-wb-readonly-badge
+          className="shrink-0 rounded bg-(--ui-bg-quinary) px-1 py-0.5 text-[0.625rem] text-(--ui-text-quaternary)"
+        >
+          已归档只读
+        </span>
+      )}
       <span className="size-1.5 shrink-0 rounded-full" style={{ background: tone }} />
       {prio && <span className="h-3 w-0.5 shrink-0 rounded" style={{ background: prio.fg }} />}
       <span className="min-w-0 flex-1 truncate text-[0.75rem] font-medium text-(--ui-text-primary)">
@@ -63,7 +112,7 @@ function TodayCardRow({ card, onPreview }: { card: WbCard; onPreview: (c: WbCard
           {card.due}
         </span>
       )}
-      {primary && (
+      {!multiSelectOpen && primary && (
         <button
           type="button"
           data-wb-primary={primary.kind}
@@ -120,17 +169,28 @@ function BriefCardView({ card, onAccept, onIgnore }: { card: WbBriefCard; onAcce
   )
 }
 
-function HomeRegionCardList({ items, totalCount, canShowAll, onPreview, onShowAll }: {
-  items: { card: WbCard }[]
+function HomeRegionCardList({ items, totalCount, canShowAll, onPreview, onShowAll, multiSelectOpen = false, selectedIds, onToggleSelect }: {
+  items: { card: WbCard; side?: 'done' | 'active' }[]
   totalCount: number
   canShowAll: boolean
   onPreview: (c: WbCard) => void
   onShowAll: () => void
+  multiSelectOpen?: boolean
+  selectedIds?: Set<string>
+  onToggleSelect?: (id: string) => void
 }) {
   return (
     <>
-      {items.map(({ card }) => (
-        <TodayCardRow key={`${card.dir}/${card.file}`} card={card} onPreview={onPreview} />
+      {items.map(({ card, side }) => (
+        <TodayCardRow
+          key={`${card.dir}/${card.file}`}
+          card={card}
+          onPreview={onPreview}
+          multiSelectOpen={multiSelectOpen}
+          selectable={side !== 'done'}
+          selected={multiSelectOpen && (selectedIds?.has(homeCardSelectionId(card)) ?? false)}
+          onToggleSelect={onToggleSelect}
+        />
       ))}
       {canShowAll && (
         <button
@@ -151,10 +211,13 @@ function HomeRegionCardList({ items, totalCount, canShowAll, onPreview, onShowAl
  *  首页保持 limit=8 克制，仅在用户点击「查看全部」后由 reducer 进入完整密度。
  *  recent 诚实混合 done 归档与 active 已完成来源，不把完成误称为已归档；
  *  未知状态仍 fail-closed 收敛到 contractErrors，由 HomeView 顶层横幅提示。 */
-function HomeAllRegionList({ region, onBack, onPreview }: {
+function HomeAllRegionList({ region, onBack, onPreview, multiSelectOpen = false, selectedIds, onToggleSelect }: {
   region: HomeRegionPresentation
   onBack: () => void
   onPreview: (c: WbCard) => void
+  multiSelectOpen?: boolean
+  selectedIds?: Set<string>
+  onToggleSelect?: (id: string) => void
 }) {
   const title = region.id === 'today' ? '今日'
     : region.id === 'inbox' ? '待审核'
@@ -183,8 +246,16 @@ function HomeAllRegionList({ region, onBack, onPreview }: {
         </span>
       </div>
       <div className="flex flex-col gap-1.5">
-        {region.visibleItems.map(({ card }) => (
-          <TodayCardRow key={`${card.dir}/${card.file}`} card={card} onPreview={onPreview} />
+        {region.visibleItems.map(({ card, side }) => (
+          <TodayCardRow
+            key={`${card.dir}/${card.file}`}
+            card={card}
+            onPreview={onPreview}
+            multiSelectOpen={multiSelectOpen}
+            selectable={side !== 'done'}
+            selected={multiSelectOpen && (selectedIds?.has(homeCardSelectionId(card)) ?? false)}
+            onToggleSelect={onToggleSelect}
+          />
         ))}
       </div>
     </div>
@@ -259,6 +330,120 @@ function HomeArchiveView({ archive, onBack, onPreview }: {
           </div>
         )}
       </section>
+    </div>
+  )
+}
+
+/** WB-S1-043 / FR-020：多选操作条——确认动作前显示操作类型与数量；busy 整条禁用（并发/重复提交 fail-closed）。
+ *  WB-S1-044 fail-closed：动作按钮只整组合法才可提交；混合选择显示「不适用 N 项」并可查看对象/原因；
+ *  归档只读提示与逐项失败反馈（不静默隐藏、不伪造成功）。 */
+function HomeMultiSelectActionBar({ presentation, busy, onSelectAll, onClear, onExit, onAction, failedDetail = [], overallError = null, staleSelection = [] }: {
+  presentation: HomeViewPresentation
+  busy: boolean
+  onSelectAll: () => void
+  onClear: () => void
+  onExit: () => void
+  onAction: (action: HomeBatchAction) => void
+  failedDetail?: Array<{ id: string; dir: string; file: string; reason: string }>
+  overallError?: string | null
+  staleSelection?: Array<{ id: string; reason: string }>
+}) {
+  const mixedActions = presentation.batchActionEligibility
+    ? HOME_BATCH_ACTIONS.filter(a => (presentation.batchActionEligibility?.[a]?.ineligibleCount ?? 0) > 0)
+    : []
+  return (
+    <div
+      data-wb-multiselect-bar
+      className="sticky bottom-0 z-30 mt-2 shrink-0 rounded-lg border border-(--ui-accent)/40 bg-(--ui-bg-elevated) px-2.5 py-2 shadow-lg"
+    >
+      <div className="flex flex-wrap items-center gap-1.5 text-[0.75rem]">
+        <span className="font-semibold tabular-nums text-(--ui-text-primary)">已选 {presentation.multiSelectCount} 项</span>
+        {presentation.multiSelectReadonlyCount > 0 && (
+          <span data-wb-readonly-notice className="rounded bg-(--ui-bg-quinary) px-1.5 py-0.5 text-[0.6875rem] text-(--ui-text-quaternary)">
+            已归档 {presentation.multiSelectReadonlyCount} 项只读，不可批处理
+          </span>
+        )}
+        <button type="button" data-wb-select-all-visible disabled={busy} className="rounded border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) disabled:opacity-40" onClick={onSelectAll}>
+          全选当前可见
+        </button>
+        <button type="button" data-wb-clear-selection disabled={busy} className="rounded border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) disabled:opacity-40" onClick={onClear}>
+          清空
+        </button>
+        <button type="button" data-wb-exit-multiselect disabled={busy} className="rounded border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) disabled:opacity-40" onClick={onExit}>
+          退出多选
+        </button>
+      </div>
+      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+        {HOME_BATCH_ACTIONS.map(action => {
+          const elig = presentation.batchActionEligibility?.[action]
+          const canSubmit = !!elig && elig.eligibleCount > 0 && elig.ineligibleCount === 0
+          return (
+            <button
+              key={action}
+              type="button"
+              data-wb-batch-action={action}
+              disabled={!presentation.canSubmitBatch || busy || !canSubmit}
+              onClick={() => onAction(action)}
+              className="rounded border border-(--ui-accent)/40 bg-(--ui-accent)/10 px-2 py-1 text-[0.75rem] font-medium text-(--ui-accent) hover:bg-(--ui-accent)/20 disabled:opacity-40"
+            >
+              {HOME_BATCH_ACTION_LABEL[action]} · {elig ? elig.eligibleCount : 0} 项
+              {elig && elig.ineligibleCount > 0 && (
+                <span data-wb-ineligible-badge className="ml-1 rounded bg-(--ui-bg-quinary) px-1 text-[0.6875rem] text-[#f87171]">
+                  不适用 {elig.ineligibleCount} 项
+                </span>
+              )}
+            </button>
+          )
+        })}
+        {busy && <span className="text-[0.75rem] text-(--ui-text-tertiary)">提交中…</span>}
+      </div>
+      {mixedActions.length > 0 && (
+        <details data-wb-ineligible-detail className="mt-1 text-[0.75rem] text-(--ui-text-tertiary)">
+          <summary className="cursor-pointer">查看不适用项与原因（{mixedActions.length} 个动作）</summary>
+          <ul className="mt-1 max-h-40 overflow-y-auto pl-4 text-[0.6875rem] text-(--ui-text-quaternary)">
+            {mixedActions.map(action => {
+              const elig = presentation.batchActionEligibility?.[action]
+              if (!elig) return null
+              return (
+                <li key={action} className="mt-0.5">
+                  <span className="font-medium text-(--ui-text-secondary)">{HOME_BATCH_ACTION_LABEL[action]}</span> 不适用 {elig.ineligibleCount} 项：
+                  <ul className="pl-3">
+                    {elig.ineligible.slice(0, 12).map(i => (
+                      <li key={i.id} className="mt-0.5">
+                        {i.dir}/{i.file} — {i.reason}
+                      </li>
+                    ))}
+                  </ul>
+                </li>
+              )
+            })}
+          </ul>
+        </details>
+      )}
+      {(failedDetail.length > 0 || overallError || staleSelection.length > 0) && (
+        <div data-wb-batch-feedback className="mt-1.5 rounded-md border border-[#f87171]/40 bg-[#f87171]/10 px-2 py-1.5 text-[0.75rem] text-[#f87171]">
+          {overallError && <p className="font-medium">{overallError}</p>}
+          {staleSelection.length > 0 && (
+            <ul className="mt-0.5 list-disc pl-4 text-[0.6875rem]">
+              {staleSelection.map(s => (
+                <li key={s.id} className="mt-0.5">
+                  {s.id} — {s.reason}
+                </li>
+              ))}
+            </ul>
+          )}
+          {failedDetail.length > 0 && (
+            <ul className="mt-0.5 list-disc pl-4 text-[0.6875rem]">
+              {failedDetail.map(f => (
+                <li key={f.id} className="mt-0.5">
+                  {f.dir}/{f.file} — {f.reason}
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="mt-0.5 text-[0.6875rem] opacity-80">失败项仍保留在选中集，可修正选择后重试或退出。</p>
+        </div>
+      )}
     </div>
   )
 }
@@ -346,6 +531,63 @@ export function HomeView({ board, onPreview, onOpenLegacy }: {
   const showAllRegion = presentation.expandedRegion
   const openShowAll = (regionId: HomeRegionId) => dispatchView({ type: 'show-all', regionId })
 
+  // WB-S1-043 / FR-020：多选提交（仅复用既有 /batch；WB-S1-044：busy 门改为可测试 BatchGate guard，
+    // 并发第二次提交不调用 transport（guardedSubmit 实测）；响应结算走 settleBatchResponse seam，
+    // 部分/全失败不清空不伪造成功，只移除后端明确成功的条目）
+    const [batchBusy, setBatchBusy] = useState(false)
+    const batchGateRef = useRef(new BatchGate())
+    const [batchFeedback, setBatchFeedback] = useState<{ failed: Array<{ id: string; dir: string; file: string; reason: string }>; overall: string | null } | null>(null)
+    const runBatch = async (action: HomeBatchAction) => {
+      if (!presentation.canSubmitBatch || batchBusy) return
+      const submission = buildHomeBatchSubmission(presentation.selectedIds, action, model)
+      if (!submission) {
+        // WB-S1-046 / A3：submission boundary 拒绝（duplicate/unknown/stale/mixed/全不合法）时
+        // 保留全部选择并显示逐项可行动原因，不清除选择（CoderX 073940 Blocker5）。
+        const eligibility = computeBatchActionEligibility(model, presentation.selectedIds, action)
+        const failed = presentation.selectedIds.map(id => {
+          const hit = eligibility.ineligible.find(i => i.id === id)
+          return { id, dir: hit?.dir ?? '', file: hit?.file ?? id, reason: hit?.reason ?? '该选择不可批处理（重复/未知/已移除），已保留' }
+        })
+        dispatchView({ type: 'batch-settle', multiSelectOpen: true, selectedIds: presentation.selectedIds })
+        setBatchFeedback({ failed, overall: '当前选择包含不可批处理的条目，未发送任何请求；选择已全部保留，可逐项处理' })
+        return
+      }
+      setBatchBusy(true)
+      try {
+        const outcome = await guardedSubmit(batchGateRef.current, async () => {
+          try {
+            const res = await batchAction(action, submission.items)
+            return { transportError: undefined, response: res }
+          } catch (err) {
+            return { transportError: String(err), response: undefined }
+          }
+        })
+        if (outcome === null) return // 并发第二次提交被 gate 拦下，transport 未被调用
+        const settlement = settleBatchResponse(
+          viewState,
+          outcome.transportError !== undefined ? { transportError: outcome.transportError } : outcome.response!,
+          presentation.selectedIds,
+        )
+        if (settlement.settledCleanly) {
+          host.notify({ kind: 'success', message: `批量${HOME_BATCH_ACTION_LABEL[action]} ${settlement.removedCount} 项` })
+          invalidateBoard() // 全成功：invalidate authoritative board
+          dispatchView({ type: 'batch-settled' }) // 退出多选并清空
+          setBatchFeedback(null)
+        } else {
+          if (settlement.removedCount > 0) invalidateBoard() // 部分成功：invalidate board，保留多选与失败集
+          dispatchView({ type: 'batch-settle', multiSelectOpen: settlement.keepOpen, selectedIds: settlement.selectedIds })
+          setBatchFeedback(
+            settlement.failedDetail.length > 0 || settlement.overallError
+              ? { failed: settlement.failedDetail, overall: settlement.overallError }
+              : null,
+          )
+        }
+      } finally {
+        setBatchBusy(false)
+      }
+    }
+  const selectedSet = useMemo(() => new Set(presentation.selectedIds), [presentation.selectedIds])
+
   // 健康反馈（Task 6 统一口径）：三色收敛 + unreachable 独立分支
   const healthState: 'loading' | 'ok' | 'degraded' | 'unreachable'
     = health.isLoading ? 'loading'
@@ -430,8 +672,16 @@ export function HomeView({ board, onPreview, onOpenLegacy }: {
         </div>
       )}
 
-      {presentation.archiveEntryVisible && presentation.mode !== 'archive' && (
-        <div className="mt-1 flex justify-end px-1">
+      {presentation.archiveEntryVisible && presentation.mode !== 'archive' && !presentation.multiSelectOpen && (
+        <div className="mt-1 flex items-center justify-end gap-2 px-1">
+          <button
+            type="button"
+            data-wb-multiselect-entry
+            className="rounded border border-(--ui-accent)/40 bg-(--ui-accent)/10 px-2 py-0.5 text-[0.75rem] text-(--ui-accent) hover:bg-(--ui-accent)/20"
+            onClick={() => dispatchView({ type: 'enter-multiselect' })}
+          >
+            多选 / 批量处理
+          </button>
           <button
             type="button"
             data-wb-archive-entry
@@ -444,7 +694,14 @@ export function HomeView({ board, onPreview, onOpenLegacy }: {
       )}
 
       {presentation.mode === 'expanded' && showAllRegion ? (
-        <HomeAllRegionList region={showAllRegion} onBack={() => dispatchView({ type: 'back' })} onPreview={onPreview} />
+        <HomeAllRegionList
+          region={showAllRegion}
+          onBack={() => dispatchView({ type: 'back' })}
+          onPreview={onPreview}
+          multiSelectOpen={presentation.multiSelectOpen}
+          selectedIds={selectedSet}
+          onToggleSelect={id => dispatchView({ type: 'toggle-select', id })}
+        />
       ) : presentation.mode === 'archive' && presentation.archive ? (
         <HomeArchiveView archive={presentation.archive} onBack={() => dispatchView({ type: 'back' })} onPreview={onPreview} />
       ) : (
@@ -473,6 +730,9 @@ export function HomeView({ board, onPreview, onOpenLegacy }: {
                 canShowAll={region.canShowAll}
                 onPreview={onPreview}
                 onShowAll={() => openShowAll(region.id)}
+                multiSelectOpen={presentation.multiSelectOpen}
+                selectedIds={selectedSet}
+                onToggleSelect={id => dispatchView({ type: 'toggle-select', id })}
               />
             )}
           </section>
@@ -508,6 +768,9 @@ export function HomeView({ board, onPreview, onOpenLegacy }: {
               canShowAll={recentRegion.canShowAll}
               onPreview={onPreview}
               onShowAll={() => openShowAll('recent')}
+              multiSelectOpen={presentation.multiSelectOpen}
+              selectedIds={selectedSet}
+              onToggleSelect={id => dispatchView({ type: 'toggle-select', id })}
             />
           )}
         </section>
@@ -535,6 +798,20 @@ export function HomeView({ board, onPreview, onOpenLegacy }: {
           )}
         </section>
       </div>
+      )}
+
+      {presentation.mode !== 'archive' && presentation.multiSelectOpen && (
+        <HomeMultiSelectActionBar
+          presentation={presentation}
+          busy={batchBusy}
+          failedDetail={batchFeedback?.failed ?? []}
+          overallError={batchFeedback?.overall ?? null}
+          staleSelection={presentation.staleSelection}
+          onSelectAll={() => dispatchView({ type: 'select-all-visible', ids: presentation.multiSelectVisibleIds })}
+          onClear={() => dispatchView({ type: 'clear-selection' })}
+          onExit={() => dispatchView({ type: 'exit-multiselect' })}
+          onAction={runBatch}
+        />
       )}
     </div>
   )

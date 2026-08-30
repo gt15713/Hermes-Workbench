@@ -273,7 +273,7 @@ import {
   useQuery as useQuery3,
   useValue as useValue2
 } from "@hermes/plugin-sdk";
-import { Component, useCallback, useEffect as useEffect3, useMemo as useMemo3, useRef as useRef2, useState as useState4 } from "react";
+import { Component, useCallback, useEffect as useEffect3, useMemo as useMemo3, useRef as useRef3, useState as useState4 } from "react";
 
 // desktop-src/types.ts
 var PARTITION_META = {
@@ -1037,18 +1037,170 @@ function ViewSwitcher({ mode, onChange }) {
 
 // desktop-src/home.tsx
 import { cn as cn3, Codicon as Codicon2, host as host2, useQuery as useQuery2 } from "@hermes/plugin-sdk";
-import { useEffect, useMemo as useMemo2, useReducer, useState as useState2 } from "react";
+import { useEffect, useMemo as useMemo2, useReducer, useRef, useState as useState2 } from "react";
+
+// desktop-src/batch-response.ts
+function validateBatchResponse(input) {
+  if (!isRecord(input)) return invalid("响应不是 object");
+  if (typeof input.ok !== "boolean") return invalid("响应 ok 必须是 boolean");
+  if (!Array.isArray(input.done)) return invalid("响应 done 必须是数组");
+  if (!Array.isArray(input.failed)) return invalid("响应 failed 必须是数组");
+  if (!isRecord(input.summary)) return invalid("响应 summary 必须是 object");
+  const ok = input.summary.ok;
+  const fail = input.summary.fail;
+  if (!isCount(ok) || !isCount(fail)) return invalid("响应 summary.ok/fail 必须是 finite 非负整数");
+  const done = parseRows(input.done, "done");
+  if (!done.valid) return done;
+  const failed = parseRows(input.failed, "failed");
+  if (!failed.valid) return failed;
+  if (input.error !== void 0 && typeof input.error !== "string") return invalid("响应 error 必须是 string");
+  return {
+    valid: true,
+    response: {
+      ok: input.ok,
+      done: done.rows,
+      failed: failed.rows,
+      summary: { ok, fail },
+      ...input.error === void 0 ? {} : { error: input.error }
+    }
+  };
+}
+function isGlobalBatchRejection(response) {
+  return response.ok === false && response.done.length === 0 && response.failed.length === 0 && response.summary.ok === 0 && response.summary.fail === 0 && typeof response.error === "string" && response.error.length > 0;
+}
+function settleLegacyBatchResponse(action, submitted, input) {
+  const validation = validateBatchResponse(input);
+  if (!validation.valid) return validation;
+  const response = validation.response;
+  if (isGlobalBatchRejection(response)) return globalRejection(response.error);
+  if (response.summary.ok !== response.done.length || response.summary.fail !== response.failed.length) {
+    return invalid("summary 计数与 done/failed 长度不一致");
+  }
+  const expectedOk = response.failed.length === 0 || response.done.length > 0;
+  if (response.ok !== expectedOk) return invalid("响应 ok 与 done/failed 真值表不一致");
+  const expected = /* @__PURE__ */ new Set();
+  for (const item of submitted) {
+    const identity = batchIdentity(action, item.dir, item.file, item.entry_title ?? "");
+    if (!identity || expected.has(identity)) return invalid("submitted identity 非空且唯一");
+    expected.add(identity);
+  }
+  const actual = /* @__PURE__ */ new Set();
+  for (const row of [...response.done, ...response.failed]) {
+    const identity = batchIdentity(action, row.dir, row.file, row.entry ?? "");
+    if (!identity || actual.has(identity)) return invalid("done/failed identity 非空、唯一且不交叠");
+    actual.add(identity);
+  }
+  if (actual.size !== expected.size || [...actual].some((identity) => !expected.has(identity))) {
+    return invalid("done/failed identity 必须属于并精确覆盖 submitted");
+  }
+  return validation;
+}
+function consumeLegacyBatchResponse(action, submitted, input, effects) {
+  const decision = settleLegacyBatchResponse(action, submitted, input);
+  if (!decision.valid) {
+    effects.notify({ kind: "error", message: decision.error });
+    return decision;
+  }
+  const okN = decision.response.summary.ok;
+  const failN = decision.response.summary.fail;
+  const failedItems = failN > 0 ? submitted.filter((item) => decision.response.failed.some((row) => batchIdentity(action, item.dir, item.file, item.entry_title ?? "") === batchIdentity(action, row.dir, row.file, row.entry ?? ""))) : [];
+  const failureDetails = decision.response.failed.map((row) => `${row.entry?.trim() || row.file}: ${row.error || "操作失败"}`).join("；");
+  effects.notify({
+    kind: failN > 0 ? "warning" : "success",
+    message: `批量归档 ${okN} 项${failN ? `，${failN} 项失败：${failureDetails}` : ""}`
+  });
+  if (okN > 0) effects.invalidate();
+  if (failN > 0) {
+    effects.replaceSelection(failedItems);
+  } else {
+    effects.clearSelection();
+    effects.exitMultiMode();
+  }
+  return decision;
+}
+function batchIdentity(action, dir, file, entry) {
+  const canonicalDir = canonicalPath(dir);
+  const canonicalFile = canonicalPath(file);
+  if (!canonicalDir || !canonicalFile) return null;
+  const base = JSON.stringify([canonicalDir, canonicalFile]);
+  return action === "resolve" || action === "to-task" ? `${base}:${entry.trim()}` : base;
+}
+function canonicalPath(value) {
+  const parts = [];
+  for (const part of value.trim().replaceAll("\\", "/").split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (parts.length === 0) return "";
+      parts.pop();
+    } else {
+      parts.push(part);
+    }
+  }
+  return parts.join("/").toLocaleLowerCase();
+}
+function parseRows(value, label) {
+  const rows = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const row = value[index];
+    if (!isRecord(row) || typeof row.dir !== "string" || row.dir.length === 0 || typeof row.file !== "string" || row.file.length === 0) {
+      return invalid(`响应 ${label}[${index}] 必须包含非空 string dir/file`);
+    }
+    if (row.entry !== void 0 && typeof row.entry !== "string") return invalid(`响应 ${label}[${index}].entry 必须是 string`);
+    if (row.error !== void 0 && typeof row.error !== "string") return invalid(`响应 ${label}[${index}].error 必须是 string`);
+    rows.push({
+      dir: row.dir,
+      file: row.file,
+      ...row.entry === void 0 ? {} : { entry: row.entry },
+      ...row.error === void 0 ? {} : { error: row.error }
+    });
+  }
+  return { valid: true, rows };
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isCount(value) {
+  return typeof value === "number" && Number.isFinite(value) && Number.isInteger(value) && value >= 0;
+}
+function invalid(error) {
+  return { valid: false, classification: "protocol-error", error: `批量响应协议错误：${error}` };
+}
+function globalRejection(error) {
+  return { valid: false, classification: "global-rejection", error };
+}
 
 // desktop-src/home-model.ts
 var HOME_VIEW_INITIAL_STATE = { showAllRegionId: null };
+function pickMulti(state) {
+  return { multiSelectOpen: state.multiSelectOpen, selectedIds: state.selectedIds };
+}
 function homeViewStateReducer(_state, action) {
   switch (action.type) {
     case "show-all":
-      return { showAllRegionId: action.regionId };
+      return { showAllRegionId: action.regionId, ...pickMulti(_state) };
     case "open-archive":
-      return { showAllRegionId: null, archiveOpen: true };
+      return { showAllRegionId: null, archiveOpen: true, ...pickMulti(_state) };
     case "back":
-      return HOME_VIEW_INITIAL_STATE;
+      return { ...HOME_VIEW_INITIAL_STATE, ...pickMulti(_state) };
+    case "enter-multiselect":
+      return { ..._state, multiSelectOpen: true };
+    case "exit-multiselect":
+      return { ..._state, multiSelectOpen: false, selectedIds: [] };
+    case "toggle-select": {
+      const ids = _state.selectedIds ?? [];
+      return {
+        ..._state,
+        selectedIds: ids.includes(action.id) ? ids.filter((id2) => id2 !== action.id) : [...ids, action.id]
+      };
+    }
+    case "select-all-visible":
+      return { ..._state, selectedIds: action.ids };
+    case "clear-selection":
+      return { ..._state, selectedIds: [] };
+    case "batch-settled":
+      return { ..._state, multiSelectOpen: false, selectedIds: [] };
+    case "batch-settle":
+      return { ..._state, multiSelectOpen: action.multiSelectOpen, selectedIds: action.selectedIds };
     default:
       return _state;
   }
@@ -1062,6 +1214,37 @@ function buildHomeViewPresentation(model, state, previewLimit = 8) {
   const expandedSource = state.showAllRegionId ? model.regions.find((region) => region.id === state.showAllRegionId) ?? null : null;
   const expandedRegion = expandedSource ? { ...expandedSource, visibleItems: expandedSource.items, canShowAll: false } : null;
   const archiveOpen = state.archiveOpen === true;
+  const selectableIds = /* @__PURE__ */ new Set();
+  for (const region of model.regions) {
+    for (const item of region.items) {
+      if (item.side !== "active") continue;
+      selectableIds.add(homeCardSelectionId(item.card));
+    }
+  }
+  const multiSelectActive = state.multiSelectOpen === true && !archiveOpen;
+  const selectedIds = (state.selectedIds ?? []).filter((id2) => selectableIds.has(id2));
+  const staleSelectionVisible = multiSelectActive ? (state.selectedIds ?? []).filter((id2) => !selectableIds.has(id2)).map((id2) => {
+    const found = findCardById(model, id2);
+    const reason = found === "contract-error" ? "状态未知，不可批处理" : found === null ? "条目已不在当前事实源（可能已在其他会话处理）" : found.side === "done" ? "已归档，只读不可批处理" : "状态未知，不可批处理";
+    return { id: id2, reason };
+  }) : [];
+  const visibleIds = [];
+  let readonlyVisibleCount = 0;
+  if (!archiveOpen) {
+    const source = expandedRegion ? [expandedRegion] : regions;
+    for (const region of source) {
+      for (const item of region.visibleItems) {
+        if (item.side === "active") visibleIds.push(homeCardSelectionId(item.card));
+        else readonlyVisibleCount += 1;
+      }
+    }
+  }
+  const batchActionEligibility = multiSelectActive && selectedIds.length > 0 ? Object.fromEntries(
+    HOME_BATCH_ACTIONS.map((action) => [
+      action,
+      summarizeEligibility(computeBatchActionEligibility(model, selectedIds, action))
+    ])
+  ) : null;
   return {
     mode: archiveOpen ? "archive" : expandedRegion ? "expanded" : "home",
     regions,
@@ -1069,8 +1252,27 @@ function buildHomeViewPresentation(model, state, previewLimit = 8) {
     contractErrorBannerVisible: model.contractErrors.length > 0,
     legacyFallbackVisible: true,
     archiveEntryVisible: true,
-    archive: archiveOpen ? model.archive : null
+    archive: archiveOpen ? model.archive : null,
+    multiSelectOpen: multiSelectActive,
+    multiSelectCount: selectedIds.length,
+    multiSelectVisibleIds: visibleIds,
+    selectedIds,
+    canSubmitBatch: multiSelectActive && selectedIds.length > 0,
+    multiSelectReadonlyCount: multiSelectActive ? readonlyVisibleCount : 0,
+    batchActionEligibility,
+    staleSelection: staleSelectionVisible
   };
+}
+function findCardById(model, id2) {
+  for (const region of model.regions) {
+    for (const item of region.items) {
+      if (homeCardSelectionId(item.card) === id2) return { side: item.side };
+    }
+  }
+  for (const err of model.contractErrors) {
+    if (homeCardSelectionId(err.card) === id2) return "contract-error";
+  }
+  return null;
 }
 var REVIEWABLE_SECTIONS = /* @__PURE__ */ new Set(["thought", "video", "psych", "dream"]);
 var COMPLETED_STATUSES = /* @__PURE__ */ new Set(["completed", "ingested", "accepted", "ignored", "done", "abandoned", "cleared"]);
@@ -1200,6 +1402,223 @@ function buildArchiveModel(board) {
   };
   return { done: collect("done"), trash: collect("trash") };
 }
+var HOME_BATCH_ACTIONS = ["complete", "resolve", "to-task", "trash"];
+var HOME_BATCH_ACTION_LABEL = {
+  complete: "完成",
+  resolve: "处理",
+  "to-task": "移入任务",
+  trash: "回收站"
+};
+function homeCardSelectionId(card) {
+  return `${card.dir}|${card.file}`;
+}
+function homeSelectionIdToParts(id2) {
+  const sep = id2.indexOf("|");
+  if (sep <= 0 || sep === id2.length - 1) throw new Error(`invalid selection id: ${id2}`);
+  return { dir: id2.slice(0, sep), file: id2.slice(sep + 1) };
+}
+function buildHomeBatchSubmission(ids, action, model) {
+  const selectable = /* @__PURE__ */ new Set();
+  for (const region of model.regions) {
+    for (const item of region.items) {
+      if (item.side !== "active") continue;
+      selectable.add(homeCardSelectionId(item.card));
+    }
+  }
+  if (new Set(ids).size !== ids.length) return null;
+  const items = [];
+  for (const id2 of ids) {
+    if (!selectable.has(id2)) continue;
+    try {
+      const { dir, file } = homeSelectionIdToParts(id2);
+      items.push({ dir, file });
+    } catch {
+      continue;
+    }
+  }
+  if (items.length === 0) return null;
+  const eligibility = computeBatchActionEligibility(model, ids, action);
+  if (eligibility.ineligible.length > 0 || eligibility.eligible.length !== new Set(ids).size) return null;
+  return { action, items };
+}
+var BATCH_INBOX_DIRS = /* @__PURE__ */ new Set(["待验证", "待回看", "梦中的邮件", "心理学随想"]);
+var BATCH_TRASH_DIRS = /* @__PURE__ */ new Set(["待验证", "待回看", "任务", "心理学随想", "梦中的邮件", "已处理", "回收站"]);
+function computeBatchActionEligibility(model, ids, action) {
+  const byId = /* @__PURE__ */ new Map();
+  for (const region of model.regions) {
+    for (const item of region.items) byId.set(homeCardSelectionId(item.card), { card: item.card, side: item.side });
+  }
+  const eligible = [];
+  const ineligible = [];
+  for (const id2 of new Set(ids)) {
+    const found = byId.get(id2);
+    if (!found || found.side !== "active") {
+      const parts = safeIdParts(id2);
+      ineligible.push({ id: id2, dir: parts.dir, file: parts.file, reason: "已归档 / 未知状态 / 已不在当前事实源，批处理不适用" });
+      continue;
+    }
+    const card = found.card;
+    const status = (card.status || "").trim();
+    const execResult = (card.execution_result || "").trim().toLowerCase();
+    let reason = null;
+    if (action === "complete") {
+      const isTodo = status === "todo";
+      const isInProgressSuccess = status === "in_progress" && execResult === "success";
+      const isDoneSuccess = status.toLowerCase() === "done" && execResult === "success";
+      const isCompleted = status === "completed";
+      if (!isTodo && !isInProgressSuccess && !isDoneSuccess && !isCompleted) {
+        reason = `状态 ${status || "（空）"}——仅 todo、执行中(execution_result=success)、done+success、completed 可「完成」`;
+      }
+    } else if (action === "trash") {
+      if (!BATCH_TRASH_DIRS.has(card.dir)) reason = `分区 ${card.dir || "（空）"} 不在当前事实源分区白名单`;
+    } else if (action === "resolve" || action === "to-task") {
+      if (!BATCH_INBOX_DIRS.has(card.dir)) reason = `仅收件箱分区（待验证/待回看/梦中的邮件/心理学随想）可${action === "resolve" ? "确认处理" : "转任务"}`;
+    }
+    if (reason) ineligible.push({ id: id2, dir: card.dir, file: card.file, reason });
+    else eligible.push(id2);
+  }
+  return { eligible, ineligible };
+}
+function safeIdParts(id2) {
+  try {
+    return homeSelectionIdToParts(id2);
+  } catch {
+    return { dir: "", file: id2 };
+  }
+}
+function summarizeEligibility(r) {
+  return { eligibleCount: r.eligible.length, ineligibleCount: r.ineligible.length, ineligible: r.ineligible };
+}
+var BatchGate = class {
+  held = false;
+  tryAcquire() {
+    if (this.held) return false;
+    this.held = true;
+    return true;
+  }
+  release() {
+    this.held = false;
+  }
+};
+async function guardedSubmit(gate, transport) {
+  if (!gate.tryAcquire()) return null;
+  try {
+    return await transport();
+  } finally {
+    gate.release();
+  }
+}
+function settleBatchResponse(_state, input, submittedIds) {
+  const submitted = uniq(submittedIds);
+  const submittedSet = new Set(submitted);
+  const originalSelected = uniq(_state.selectedIds ?? submitted);
+  const staleIds = originalSelected.filter((id2) => !submittedSet.has(id2));
+  const preserveWithStale = (ids) => uniq([...ids, ...staleIds]);
+  if ("transportError" in input) {
+    return { settledCleanly: false, keepOpen: true, selectedIds: preserveWithStale(submitted), removedCount: 0, failedDetail: [], overallError: input.transportError };
+  }
+  const { ok, done, failed, summary, error } = input;
+  const wire = validateBatchResponse(input);
+  if (!wire.valid) {
+    return { settledCleanly: false, keepOpen: true, selectedIds: preserveWithStale(submitted), removedCount: 0, failedDetail: protocolFailedDetails(failed), overallError: `${wire.error}${error ? `；后端错误：${error}` : ""}。未移除任何条目，保留全部所选` };
+  }
+  if (isGlobalBatchRejection(wire.response)) {
+    return { settledCleanly: false, keepOpen: true, selectedIds: preserveWithStale(submitted), removedCount: 0, failedDetail: [], overallError: wire.response.error };
+  }
+  const doneItems = Array.isArray(done) ? done : null;
+  const failedItems = Array.isArray(failed) ? failed : null;
+  const summaryRequired = summary !== void 0 && summary !== null && typeof summary.ok === "number" && typeof summary.fail === "number" && Number.isFinite(summary.ok) && Number.isFinite(summary.fail) && Number.isInteger(summary.ok) && Number.isInteger(summary.fail) && summary.ok >= 0 && summary.fail >= 0;
+  if (!summaryRequired) {
+    return { settledCleanly: false, keepOpen: true, selectedIds: preserveWithStale(submitted), removedCount: 0, failedDetail: [], overallError: `批量响应协议错误：summary 缺失或畸形（必须为 finite 非负整数 ok/fail）${error ? `；后端错误：${error}` : ""}。未移除任何条目，保留全部所选` };
+  }
+  if (doneItems === null || failedItems === null) {
+    return { settledCleanly: false, keepOpen: true, selectedIds: preserveWithStale(submitted), removedCount: 0, failedDetail: [], overallError: "批量响应协议错误：done 或 failed 数组缺失（二者均为必需字段），未移除任何条目，保留全部所选" };
+  }
+  const doneParsed = [];
+  const failedParsed = [];
+  const problems = [];
+  for (const raw of doneItems ?? []) {
+    const p = ident(raw);
+    if (!p) {
+      problems.push("done 含空 identity");
+      continue;
+    }
+    doneParsed.push(p.id);
+    if (!submittedSet.has(p.id)) problems.push(`done 含外来 identity「${p.id}」`);
+  }
+  for (const raw of failedItems ?? []) {
+    const p = ident(raw);
+    if (!p) {
+      problems.push("failed 含空 identity");
+      failedParsed.push({ id: "", dir: raw?.dir ?? "", file: raw?.file ?? "", reason: raw?.error ?? "（无 dir/file 的畸形行）" });
+      continue;
+    }
+    failedParsed.push({ id: p.id, dir: p.dir, file: p.file, reason: raw?.error ?? "failed" });
+    if (!submittedSet.has(p.id)) problems.push(`failed 含外来 identity「${p.id}」`);
+  }
+  if (new Set(doneParsed).size !== doneParsed.length) problems.push("done 含重复 identity");
+  const failedIds = failedParsed.filter((f) => f.id !== "").map((f) => f.id);
+  if (new Set(failedIds).size !== failedIds.length) problems.push("failed 含重复 identity");
+  const doneSet = new Set(doneParsed);
+  const failedSet = new Set(failedIds);
+  const overlap = [...doneSet].filter((id2) => failedSet.has(id2));
+  if (overlap.length > 0) problems.push(`done/failed 交集「${overlap.join("、")}」`);
+  const union = /* @__PURE__ */ new Set([...doneSet, ...failedSet]);
+  if (union.size !== submitted.length || !submitted.every((id2) => union.has(id2))) {
+    problems.push("done∪failed 与 submitted 不完全相等（缺项或多余）");
+  }
+  if (summaryRequired) {
+    const okCount = summary.ok;
+    const failCount = summary.fail;
+    if (okCount !== doneParsed.length || failCount !== failedIds.length) {
+      problems.push(`summary 计数与数组不一致（ok=${okCount}≠done=${doneParsed.length}；fail=${failCount}≠failed=${failedIds.length}）`);
+    }
+  }
+  const backendOkFormula = failedIds.length === 0 || doneParsed.length > 0;
+  if (ok !== backendOkFormula) {
+    problems.push(`顶层 ok=${ok} 与后端真值表矛盾（failed=${failedIds.length} 项、done=${doneParsed.length} 项；后端公式 ok=(failed空)或(done非空) → 期望 ${backendOkFormula}）`);
+  }
+  if (problems.length > 0) {
+    return {
+      settledCleanly: false,
+      keepOpen: true,
+      selectedIds: preserveWithStale(submitted),
+      removedCount: 0,
+      failedDetail: failedParsed,
+      overallError: `批量响应协议错误：${problems.join("；")}。未移除任何条目、不推断成功，保留全部所选可重试`
+    };
+  }
+  if (failedIds.length > 0 || ok === false) {
+    return { settledCleanly: false, keepOpen: true, selectedIds: preserveWithStale(failedIds), removedCount: doneParsed.length, failedDetail: failedParsed, overallError: staleIds.length > 0 ? "仍有未提交的失效选择；请逐项取消选择、点击 Clear 或退出多选以明确清理" : null };
+  }
+  if (doneParsed.length > 0) {
+    if (staleIds.length > 0) {
+      return { settledCleanly: false, keepOpen: true, selectedIds: staleIds, removedCount: doneParsed.length, failedDetail: [], overallError: "可提交项已成功；仍有未提交的失效选择，请逐项取消选择、点击 Clear 或退出多选以明确清理" };
+    }
+    return { settledCleanly: true, keepOpen: false, selectedIds: [], removedCount: doneParsed.length, failedDetail: [], overallError: null };
+  }
+  return { settledCleanly: false, keepOpen: true, selectedIds: preserveWithStale(submitted), removedCount: 0, failedDetail: [], overallError: "批量结果无法判定（无成功项），选择保留，可重试" };
+}
+function protocolFailedDetails(value) {
+  if (!Array.isArray(value)) return [];
+  return value.map((raw) => {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      return { id: "", dir: "", file: "", reason: "（畸形 failed 行）" };
+    }
+    const row = raw;
+    const dir = typeof row.dir === "string" ? row.dir : "";
+    const file = typeof row.file === "string" ? row.file : "";
+    const reason = typeof row.error === "string" && row.error.length > 0 ? row.error : "（畸形 failed 行）";
+    return { id: dir && file ? `${dir}|${file}` : "", dir, file, reason };
+  });
+}
+function ident(raw) {
+  if (!raw || !raw.dir || !raw.file) return null;
+  return { id: `${raw.dir}|${raw.file}`, dir: raw.dir, file: raw.file };
+}
+function uniq(xs) {
+  return [...new Set(xs)];
+}
 
 // desktop-src/card-action.ts
 var STATUS_PRIMARY = {
@@ -1283,29 +1702,64 @@ var BRIEF_TYPE_META = {
   overdue: { icon: "calendar", label: "过期重估" },
   decision: { icon: "question", label: "需决策" }
 };
-function TodayCardRow({ card, onPreview }) {
+function TodayCardRow({ card, onPreview, multiSelectOpen = false, selected = false, selectable = true, onToggleSelect }) {
   const tone = STATUS_TONE[card.status] || "var(--ui-text-tertiary)";
   const prio = priorityMeta(card.priority || "");
   const primary = homeCardPrimaryAction(card);
+  const selectId = homeCardSelectionId(card);
   return /* @__PURE__ */ jsxs3(
     "div",
     {
-      className: "flex w-full items-center gap-2 rounded-md border border-(--ui-stroke-secondary) px-2.5 py-1.5 transition-colors hover:border-(--ui-accent)",
-      onClick: () => onPreview(card),
+      className: cn3(
+        "flex w-full items-center gap-2 rounded-md border border-(--ui-stroke-secondary) px-2.5 py-1.5 transition-colors hover:border-(--ui-accent)",
+        multiSelectOpen && "cursor-default",
+        multiSelectOpen && !selectable && "cursor-not-allowed opacity-60",
+        selected && "border-(--ui-accent) bg-[color-mix(in_srgb,var(--ui-accent)_10%,transparent)]"
+      ),
+      onClick: () => {
+        if (multiSelectOpen) {
+          if (selectable) onToggleSelect?.(selectId);
+        } else {
+          onPreview(card);
+        }
+      },
       role: "button",
       tabIndex: 0,
       onKeyDown: (e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          onPreview(card);
+          if (multiSelectOpen) {
+            if (selectable) onToggleSelect?.(selectId);
+          } else {
+            onPreview(card);
+          }
         }
       },
       children: [
+        multiSelectOpen && selectable && /* @__PURE__ */ jsx3(
+          "span",
+          {
+            "data-wb-select-indicator": true,
+            className: cn3(
+              "flex size-4 shrink-0 items-center justify-center rounded-full border text-[0.6875rem]",
+              selected ? "border-(--ui-accent) bg-(--ui-accent) text-(--ui-bg-elevated)" : "border-(--ui-stroke-tertiary)"
+            ),
+            children: selected ? "✓" : ""
+          }
+        ),
+        multiSelectOpen && !selectable && /* @__PURE__ */ jsx3(
+          "span",
+          {
+            "data-wb-readonly-badge": true,
+            className: "shrink-0 rounded bg-(--ui-bg-quinary) px-1 py-0.5 text-[0.625rem] text-(--ui-text-quaternary)",
+            children: "已归档只读"
+          }
+        ),
         /* @__PURE__ */ jsx3("span", { className: "size-1.5 shrink-0 rounded-full", style: { background: tone } }),
         prio && /* @__PURE__ */ jsx3("span", { className: "h-3 w-0.5 shrink-0 rounded", style: { background: prio.fg } }),
         /* @__PURE__ */ jsx3("span", { className: "min-w-0 flex-1 truncate text-[0.75rem] font-medium text-(--ui-text-primary)", children: card.title || card.file.replace(/\.md$/, "") }),
         card.due && /* @__PURE__ */ jsx3("span", { className: cn3("shrink-0 text-[0.75rem]", isOverdue(card.due) ? "font-semibold text-(--ui-red)" : "text-(--ui-text-tertiary)"), children: card.due }),
-        primary && /* @__PURE__ */ jsxs3(
+        !multiSelectOpen && primary && /* @__PURE__ */ jsxs3(
           "button",
           {
             type: "button",
@@ -1362,9 +1816,20 @@ function BriefCardView({ card, onAccept, onIgnore }) {
     /* @__PURE__ */ jsx3("span", { className: "shrink-0 rounded bg-(--ui-bg-quinary) px-1 py-0.5 text-[0.75rem] text-(--ui-text-quaternary)", children: "规则建议" })
   ] });
 }
-function HomeRegionCardList({ items, totalCount, canShowAll, onPreview, onShowAll }) {
+function HomeRegionCardList({ items, totalCount, canShowAll, onPreview, onShowAll, multiSelectOpen = false, selectedIds, onToggleSelect }) {
   return /* @__PURE__ */ jsxs3(Fragment3, { children: [
-    items.map(({ card }) => /* @__PURE__ */ jsx3(TodayCardRow, { card, onPreview }, `${card.dir}/${card.file}`)),
+    items.map(({ card, side }) => /* @__PURE__ */ jsx3(
+      TodayCardRow,
+      {
+        card,
+        onPreview,
+        multiSelectOpen,
+        selectable: side !== "done",
+        selected: multiSelectOpen && (selectedIds?.has(homeCardSelectionId(card)) ?? false),
+        onToggleSelect
+      },
+      `${card.dir}/${card.file}`
+    )),
     canShowAll && /* @__PURE__ */ jsxs3(
       "button",
       {
@@ -1381,7 +1846,7 @@ function HomeRegionCardList({ items, totalCount, canShowAll, onPreview, onShowAl
     )
   ] });
 }
-function HomeAllRegionList({ region, onBack, onPreview }) {
+function HomeAllRegionList({ region, onBack, onPreview, multiSelectOpen = false, selectedIds, onToggleSelect }) {
   const title = region.id === "today" ? "今日" : region.id === "inbox" ? "待审核" : region.id === "attention" ? "需要注意" : "最近完成";
   const archivedCount = region.id === "recent" ? region.visibleItems.filter((i) => i.side === "done").length : 0;
   const activeDoneCount = region.id === "recent" ? region.visibleItems.filter((i) => i.side === "active").length : 0;
@@ -1407,7 +1872,18 @@ function HomeAllRegionList({ region, onBack, onPreview }) {
       ] }),
       /* @__PURE__ */ jsx3("span", { className: "rounded bg-(--ui-bg-quinary) px-1 py-0.5 text-[0.6875rem] text-(--ui-text-quaternary)", children: region.id === "recent" ? region.visibleItems.length === 0 ? "最近完成（混合投影）" : `已归档 ${archivedCount} · 已完成未归档 ${activeDoneCount}` : "活动任务（active 侧投影）" })
     ] }),
-    /* @__PURE__ */ jsx3("div", { className: "flex flex-col gap-1.5", children: region.visibleItems.map(({ card }) => /* @__PURE__ */ jsx3(TodayCardRow, { card, onPreview }, `${card.dir}/${card.file}`)) })
+    /* @__PURE__ */ jsx3("div", { className: "flex flex-col gap-1.5", children: region.visibleItems.map(({ card, side }) => /* @__PURE__ */ jsx3(
+      TodayCardRow,
+      {
+        card,
+        onPreview,
+        multiSelectOpen,
+        selectable: side !== "done",
+        selected: multiSelectOpen && (selectedIds?.has(homeCardSelectionId(card)) ?? false),
+        onToggleSelect
+      },
+      `${card.dir}/${card.file}`
+    )) })
   ] });
 }
 function HomeArchiveView({ archive, onBack, onPreview }) {
@@ -1460,6 +1936,102 @@ function HomeArchiveView({ archive, onBack, onPreview }) {
       ] }, `${card.dir}/${card.file}`)) })
     ] })
   ] });
+}
+function HomeMultiSelectActionBar({ presentation, busy, onSelectAll, onClear, onExit, onAction, failedDetail = [], overallError = null, staleSelection = [] }) {
+  const mixedActions = presentation.batchActionEligibility ? HOME_BATCH_ACTIONS.filter((a) => (presentation.batchActionEligibility?.[a]?.ineligibleCount ?? 0) > 0) : [];
+  return /* @__PURE__ */ jsxs3(
+    "div",
+    {
+      "data-wb-multiselect-bar": true,
+      className: "sticky bottom-0 z-30 mt-2 shrink-0 rounded-lg border border-(--ui-accent)/40 bg-(--ui-bg-elevated) px-2.5 py-2 shadow-lg",
+      children: [
+        /* @__PURE__ */ jsxs3("div", { className: "flex flex-wrap items-center gap-1.5 text-[0.75rem]", children: [
+          /* @__PURE__ */ jsxs3("span", { className: "font-semibold tabular-nums text-(--ui-text-primary)", children: [
+            "已选 ",
+            presentation.multiSelectCount,
+            " 项"
+          ] }),
+          presentation.multiSelectReadonlyCount > 0 && /* @__PURE__ */ jsxs3("span", { "data-wb-readonly-notice": true, className: "rounded bg-(--ui-bg-quinary) px-1.5 py-0.5 text-[0.6875rem] text-(--ui-text-quaternary)", children: [
+            "已归档 ",
+            presentation.multiSelectReadonlyCount,
+            " 项只读，不可批处理"
+          ] }),
+          /* @__PURE__ */ jsx3("button", { type: "button", "data-wb-select-all-visible": true, disabled: busy, className: "rounded border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) disabled:opacity-40", onClick: onSelectAll, children: "全选当前可见" }),
+          /* @__PURE__ */ jsx3("button", { type: "button", "data-wb-clear-selection": true, disabled: busy, className: "rounded border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) disabled:opacity-40", onClick: onClear, children: "清空" }),
+          /* @__PURE__ */ jsx3("button", { type: "button", "data-wb-exit-multiselect": true, disabled: busy, className: "rounded border border-(--ui-stroke-secondary) px-1.5 py-0.5 text-(--ui-text-secondary) hover:bg-(--ui-stroke-secondary) disabled:opacity-40", onClick: onExit, children: "退出多选" })
+        ] }),
+        /* @__PURE__ */ jsxs3("div", { className: "mt-1.5 flex flex-wrap items-center gap-1.5", children: [
+          HOME_BATCH_ACTIONS.map((action) => {
+            const elig = presentation.batchActionEligibility?.[action];
+            const canSubmit = !!elig && elig.eligibleCount > 0 && elig.ineligibleCount === 0;
+            return /* @__PURE__ */ jsxs3(
+              "button",
+              {
+                type: "button",
+                "data-wb-batch-action": action,
+                disabled: !presentation.canSubmitBatch || busy || !canSubmit,
+                onClick: () => onAction(action),
+                className: "rounded border border-(--ui-accent)/40 bg-(--ui-accent)/10 px-2 py-1 text-[0.75rem] font-medium text-(--ui-accent) hover:bg-(--ui-accent)/20 disabled:opacity-40",
+                children: [
+                  HOME_BATCH_ACTION_LABEL[action],
+                  " · ",
+                  elig ? elig.eligibleCount : 0,
+                  " 项",
+                  elig && elig.ineligibleCount > 0 && /* @__PURE__ */ jsxs3("span", { "data-wb-ineligible-badge": true, className: "ml-1 rounded bg-(--ui-bg-quinary) px-1 text-[0.6875rem] text-[#f87171]", children: [
+                    "不适用 ",
+                    elig.ineligibleCount,
+                    " 项"
+                  ] })
+                ]
+              },
+              action
+            );
+          }),
+          busy && /* @__PURE__ */ jsx3("span", { className: "text-[0.75rem] text-(--ui-text-tertiary)", children: "提交中…" })
+        ] }),
+        mixedActions.length > 0 && /* @__PURE__ */ jsxs3("details", { "data-wb-ineligible-detail": true, className: "mt-1 text-[0.75rem] text-(--ui-text-tertiary)", children: [
+          /* @__PURE__ */ jsxs3("summary", { className: "cursor-pointer", children: [
+            "查看不适用项与原因（",
+            mixedActions.length,
+            " 个动作）"
+          ] }),
+          /* @__PURE__ */ jsx3("ul", { className: "mt-1 max-h-40 overflow-y-auto pl-4 text-[0.6875rem] text-(--ui-text-quaternary)", children: mixedActions.map((action) => {
+            const elig = presentation.batchActionEligibility?.[action];
+            if (!elig) return null;
+            return /* @__PURE__ */ jsxs3("li", { className: "mt-0.5", children: [
+              /* @__PURE__ */ jsx3("span", { className: "font-medium text-(--ui-text-secondary)", children: HOME_BATCH_ACTION_LABEL[action] }),
+              " 不适用 ",
+              elig.ineligibleCount,
+              " 项：",
+              /* @__PURE__ */ jsx3("ul", { className: "pl-3", children: elig.ineligible.slice(0, 12).map((i) => /* @__PURE__ */ jsxs3("li", { className: "mt-0.5", children: [
+                i.dir,
+                "/",
+                i.file,
+                " — ",
+                i.reason
+              ] }, i.id)) })
+            ] }, action);
+          }) })
+        ] }),
+        (failedDetail.length > 0 || overallError || staleSelection.length > 0) && /* @__PURE__ */ jsxs3("div", { "data-wb-batch-feedback": true, className: "mt-1.5 rounded-md border border-[#f87171]/40 bg-[#f87171]/10 px-2 py-1.5 text-[0.75rem] text-[#f87171]", children: [
+          overallError && /* @__PURE__ */ jsx3("p", { className: "font-medium", children: overallError }),
+          staleSelection.length > 0 && /* @__PURE__ */ jsx3("ul", { className: "mt-0.5 list-disc pl-4 text-[0.6875rem]", children: staleSelection.map((s) => /* @__PURE__ */ jsxs3("li", { className: "mt-0.5", children: [
+            s.id,
+            " — ",
+            s.reason
+          ] }, s.id)) }),
+          failedDetail.length > 0 && /* @__PURE__ */ jsx3("ul", { className: "mt-0.5 list-disc pl-4 text-[0.6875rem]", children: failedDetail.map((f) => /* @__PURE__ */ jsxs3("li", { className: "mt-0.5", children: [
+            f.dir,
+            "/",
+            f.file,
+            " — ",
+            f.reason
+          ] }, f.id)) }),
+          /* @__PURE__ */ jsx3("p", { className: "mt-0.5 text-[0.6875rem] opacity-80", children: "失败项仍保留在选中集，可修正选择后重试或退出。" })
+        ] })
+      ]
+    }
+  );
 }
 var HOME_EMPTY_HINTS = {
   today: "今天没有安排 🎉 手机转发到 QQ 群会自动收录进工作台",
@@ -1524,6 +2096,55 @@ function HomeView({ board, onPreview, onOpenLegacy }) {
   const mainRegions = [todayRegion, inboxRegion, attentionRegion];
   const showAllRegion = presentation.expandedRegion;
   const openShowAll = (regionId) => dispatchView({ type: "show-all", regionId });
+  const [batchBusy, setBatchBusy] = useState2(false);
+  const batchGateRef = useRef(new BatchGate());
+  const [batchFeedback, setBatchFeedback] = useState2(null);
+  const runBatch = async (action) => {
+    if (!presentation.canSubmitBatch || batchBusy) return;
+    const submission = buildHomeBatchSubmission(presentation.selectedIds, action, model);
+    if (!submission) {
+      const eligibility = computeBatchActionEligibility(model, presentation.selectedIds, action);
+      const failed = presentation.selectedIds.map((id2) => {
+        const hit = eligibility.ineligible.find((i) => i.id === id2);
+        return { id: id2, dir: hit?.dir ?? "", file: hit?.file ?? id2, reason: hit?.reason ?? "该选择不可批处理（重复/未知/已移除），已保留" };
+      });
+      dispatchView({ type: "batch-settle", multiSelectOpen: true, selectedIds: presentation.selectedIds });
+      setBatchFeedback({ failed, overall: "当前选择包含不可批处理的条目，未发送任何请求；选择已全部保留，可逐项处理" });
+      return;
+    }
+    setBatchBusy(true);
+    try {
+      const outcome = await guardedSubmit(batchGateRef.current, async () => {
+        try {
+          const res = await batchAction(action, submission.items);
+          return { transportError: void 0, response: res };
+        } catch (err) {
+          return { transportError: String(err), response: void 0 };
+        }
+      });
+      if (outcome === null) return;
+      const settlement = settleBatchResponse(
+        viewState,
+        outcome.transportError !== void 0 ? { transportError: outcome.transportError } : outcome.response,
+        presentation.selectedIds
+      );
+      if (settlement.settledCleanly) {
+        host2.notify({ kind: "success", message: `批量${HOME_BATCH_ACTION_LABEL[action]} ${settlement.removedCount} 项` });
+        invalidateBoard();
+        dispatchView({ type: "batch-settled" });
+        setBatchFeedback(null);
+      } else {
+        if (settlement.removedCount > 0) invalidateBoard();
+        dispatchView({ type: "batch-settle", multiSelectOpen: settlement.keepOpen, selectedIds: settlement.selectedIds });
+        setBatchFeedback(
+          settlement.failedDetail.length > 0 || settlement.overallError ? { failed: settlement.failedDetail, overall: settlement.overallError } : null
+        );
+      }
+    } finally {
+      setBatchBusy(false);
+    }
+  };
+  const selectedSet = useMemo2(() => new Set(presentation.selectedIds), [presentation.selectedIds]);
   const healthState = health.isLoading ? "loading" : health.error ? "unreachable" : !health.data || health.data.status === "green" || health.data.status === "disabled" ? "ok" : "degraded";
   return /* @__PURE__ */ jsxs3("div", { className: "flex flex-1 flex-col overflow-y-auto px-3 pb-3", children: [
     /* @__PURE__ */ jsx3("p", { className: "mt-2 px-1 text-[0.8125rem] text-(--ui-text-tertiary)", children: "手机收进来的东西，在这里审核、继续、沉淀。" }),
@@ -1581,17 +2202,39 @@ function HomeView({ board, onPreview, onOpenLegacy }) {
       " 个条目的状态无法识别，已按契约隔离未显示在任何区。 请通过「旧版数据」查看原始状态并修正 frontmatter status 字段。"
     ] }),
     presentation.legacyFallbackVisible && /* @__PURE__ */ jsx3("div", { className: "mt-1 flex justify-end px-1", children: /* @__PURE__ */ jsx3("button", { "data-wb-legacy-fallback": true, className: "text-[0.75rem] text-(--ui-accent) hover:underline", onClick: onOpenLegacy, type: "button", children: "旧版数据 →" }) }),
-    presentation.archiveEntryVisible && presentation.mode !== "archive" && /* @__PURE__ */ jsx3("div", { className: "mt-1 flex justify-end px-1", children: /* @__PURE__ */ jsx3(
-      "button",
+    presentation.archiveEntryVisible && presentation.mode !== "archive" && !presentation.multiSelectOpen && /* @__PURE__ */ jsxs3("div", { className: "mt-1 flex items-center justify-end gap-2 px-1", children: [
+      /* @__PURE__ */ jsx3(
+        "button",
+        {
+          type: "button",
+          "data-wb-multiselect-entry": true,
+          className: "rounded border border-(--ui-accent)/40 bg-(--ui-accent)/10 px-2 py-0.5 text-[0.75rem] text-(--ui-accent) hover:bg-(--ui-accent)/20",
+          onClick: () => dispatchView({ type: "enter-multiselect" }),
+          children: "多选 / 批量处理"
+        }
+      ),
+      /* @__PURE__ */ jsx3(
+        "button",
+        {
+          type: "button",
+          "data-wb-archive-entry": true,
+          className: "text-[0.75rem] text-(--ui-accent) hover:underline",
+          onClick: () => dispatchView({ type: "open-archive" }),
+          children: "归档 / 回收站 →"
+        }
+      )
+    ] }),
+    presentation.mode === "expanded" && showAllRegion ? /* @__PURE__ */ jsx3(
+      HomeAllRegionList,
       {
-        type: "button",
-        "data-wb-archive-entry": true,
-        className: "text-[0.75rem] text-(--ui-accent) hover:underline",
-        onClick: () => dispatchView({ type: "open-archive" }),
-        children: "归档 / 回收站 →"
+        region: showAllRegion,
+        onBack: () => dispatchView({ type: "back" }),
+        onPreview,
+        multiSelectOpen: presentation.multiSelectOpen,
+        selectedIds: selectedSet,
+        onToggleSelect: (id2) => dispatchView({ type: "toggle-select", id: id2 })
       }
-    ) }),
-    presentation.mode === "expanded" && showAllRegion ? /* @__PURE__ */ jsx3(HomeAllRegionList, { region: showAllRegion, onBack: () => dispatchView({ type: "back" }), onPreview }) : presentation.mode === "archive" && presentation.archive ? /* @__PURE__ */ jsx3(HomeArchiveView, { archive: presentation.archive, onBack: () => dispatchView({ type: "back" }), onPreview }) : /* @__PURE__ */ jsxs3("div", { className: "grid grid-cols-1 gap-3 py-3 lg:grid-cols-3", children: [
+    ) : presentation.mode === "archive" && presentation.archive ? /* @__PURE__ */ jsx3(HomeArchiveView, { archive: presentation.archive, onBack: () => dispatchView({ type: "back" }), onPreview }) : /* @__PURE__ */ jsxs3("div", { className: "grid grid-cols-1 gap-3 py-3 lg:grid-cols-3", children: [
       mainRegions.map((region) => /* @__PURE__ */ jsxs3("section", { className: "flex min-w-0 flex-col gap-1.5 rounded-lg border border-(--ui-stroke-secondary) p-2.5", children: [
         /* @__PURE__ */ jsxs3("div", { className: "flex items-center gap-1.5", children: [
           /* @__PURE__ */ jsx3("span", { className: "text-[0.8125rem] font-semibold text-(--ui-text-primary)", children: region.id === "today" ? "今日" : region.id === "inbox" ? "待审核" : "需要注意" }),
@@ -1608,7 +2251,10 @@ function HomeView({ board, onPreview, onOpenLegacy }) {
             totalCount: region.items.length,
             canShowAll: region.canShowAll,
             onPreview,
-            onShowAll: () => openShowAll(region.id)
+            onShowAll: () => openShowAll(region.id),
+            multiSelectOpen: presentation.multiSelectOpen,
+            selectedIds: selectedSet,
+            onToggleSelect: (id2) => dispatchView({ type: "toggle-select", id: id2 })
           }
         )
       ] }, region.id)),
@@ -1635,7 +2281,10 @@ function HomeView({ board, onPreview, onOpenLegacy }) {
             totalCount: recentRegion.items.length,
             canShowAll: recentRegion.canShowAll,
             onPreview,
-            onShowAll: () => openShowAll("recent")
+            onShowAll: () => openShowAll("recent"),
+            multiSelectOpen: presentation.multiSelectOpen,
+            selectedIds: selectedSet,
+            onToggleSelect: (id2) => dispatchView({ type: "toggle-select", id: id2 })
           }
         )
       ] }),
@@ -1654,13 +2303,27 @@ function HomeView({ board, onPreview, onOpenLegacy }) {
           c.title
         ))
       ] })
-    ] })
+    ] }),
+    presentation.mode !== "archive" && presentation.multiSelectOpen && /* @__PURE__ */ jsx3(
+      HomeMultiSelectActionBar,
+      {
+        presentation,
+        busy: batchBusy,
+        failedDetail: batchFeedback?.failed ?? [],
+        overallError: batchFeedback?.overall ?? null,
+        staleSelection: presentation.staleSelection,
+        onSelectAll: () => dispatchView({ type: "select-all-visible", ids: presentation.multiSelectVisibleIds }),
+        onClear: () => dispatchView({ type: "clear-selection" }),
+        onExit: () => dispatchView({ type: "exit-multiselect" }),
+        onAction: runBatch
+      }
+    )
   ] });
 }
 
 // desktop-src/conversations.tsx
 import { Codicon as Codicon3, host as host3 } from "@hermes/plugin-sdk";
-import { useEffect as useEffect2, useRef, useState as useState3 } from "react";
+import { useEffect as useEffect2, useRef as useRef2, useState as useState3 } from "react";
 
 // desktop-src/clipboard.ts
 function runtimeWriters() {
@@ -1688,7 +2351,7 @@ function ConversationActionButton({ item }) {
   const primary = conversationPrimaryAction(item);
   const canOpen = primary.kind === "open_original";
   const [copyStatus, setCopyStatus] = useState3("idle");
-  const resetTimer = useRef(null);
+  const resetTimer = useRef2(null);
   useEffect2(() => () => {
     if (resetTimer.current !== null) window.clearTimeout(resetTimer.current);
   }, []);
@@ -1788,7 +2451,7 @@ function WbCardView({ card, sectionKey, onPreview, openMenuKey, onMenuOpenChange
   const tagFilter = useValue2($tagFilter);
   const menuKey = JSON.stringify([sectionKey, card.file, card.entry_title || ""]);
   const menuOpen = openMenuKey === menuKey;
-  const menuTriggerRef = useRef2(null);
+  const menuTriggerRef = useRef3(null);
   const [menuPosition, setMenuPosition] = useState4(null);
   useEffect3(() => {
     if (!menuOpen || !menuTriggerRef.current) {
@@ -2545,7 +3208,7 @@ function EditDialog({ card, onClose, onConfirm }) {
 }
 function DialogSelect({ value, onChange, options, placeholder }) {
   const [open, setOpen] = useState4(false);
-  const ref = useRef2(null);
+  const ref = useRef3(null);
   useEffect3(() => {
     if (!open) return;
     const onDown = (e) => {
@@ -2792,7 +3455,7 @@ function WorkbenchBoardPage() {
   const [searchQ, setSearchQ] = useState4("");
   const [debouncedQ, setDebouncedQ] = useState4("");
   const [searchOpen, setSearchOpen] = useState4(false);
-  const searchRef = useRef2(null);
+  const searchRef = useRef3(null);
   useEffect3(() => {
     const t = setTimeout(() => setDebouncedQ(searchQ.trim()), 250);
     return () => clearTimeout(t);
@@ -2840,12 +3503,17 @@ function WorkbenchBoardPage() {
         return { dir, file, ...entry_title ? { entry_title } : {} };
       });
       const res = await batchAction(action, items);
-      const okN = res.summary?.ok ?? 0;
-      const failN = res.summary?.fail ?? 0;
-      host4.notify({ kind: failN > 0 ? "warning" : "success", message: `批量归档 ${okN} 项${failN ? `，${failN} 项失败` : ""}` });
-      invalidateBoard();
-      setSelected(/* @__PURE__ */ new Set());
-      setMultiMode(false);
+      consumeLegacyBatchResponse(action, items, res, {
+        notify: (notice) => host4.notify(notice),
+        invalidate: invalidateBoard,
+        replaceSelection: (failedItems) => setSelected(new Set(failedItems.map((item) => JSON.stringify([
+          item.dir,
+          item.file,
+          item.entry_title ?? ""
+        ])))),
+        clearSelection: () => setSelected(/* @__PURE__ */ new Set()),
+        exitMultiMode: () => setMultiMode(false)
+      });
     } catch (err) {
       host4.notify({ kind: "error", message: String(err) });
     } finally {

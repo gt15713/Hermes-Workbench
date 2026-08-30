@@ -34,6 +34,9 @@ _DASHBOARD_DIR = str(Path(__file__).resolve().parent)
 if _DASHBOARD_DIR not in _sys.path:
     _sys.path.insert(0, _DASHBOARD_DIR)
 
+from batch_policy import (
+    ineligible_reason as _policy_ineligible_reason,
+)
 from content_capture import (
     capture_content as _capture_reviewed_content,
 )
@@ -92,6 +95,24 @@ from workbench_config import (
 
 router = APIRouter()
 _log = logging.getLogger("workbench-view")
+
+
+def _batch_rejection(error: str) -> dict:
+    return {"ok": False, "done": [], "failed": [], "summary": {"ok": 0, "fail": 0}, "error": error}
+
+
+def _canonical_batch_identity(action: str, dirname: str, filename: str, entry: str) -> tuple[str, ...] | None:
+    """Canonical action identity after the same path/entry normalization handlers consume."""
+    try:
+        resolved = _safe_resolve(dirname, filename)
+    except (OSError, ValueError, TypeError):
+        return None
+    if resolved is None:
+        return None
+    canonical_path = os.path.normcase(str(resolved.resolve()))
+    if action in {"resolve", "to-task"}:
+        return (canonical_path, entry.strip())
+    return (canonical_path,)
 
 def _queue_content_ingestion_sink(item: dict) -> dict:
     """Create one deterministic Hermes task; the Agent writes Obsidian later."""
@@ -926,31 +947,85 @@ async def batch(body: dict) -> dict:
     - trash/complete：文件级（entry_title 忽略）
     汇总结果一次返回，动作日志统一写一条批量记录。
     """
-    action = body.get("action", "")
-    items = body.get("items") or []
+    if not isinstance(body, dict):
+        return _batch_rejection("request body must be an object")
+    raw_action = body.get("action")
+    if not isinstance(raw_action, str):
+        return _batch_rejection("action must be a string")
+    action = raw_action
     if action not in {"resolve", "to-task", "trash", "complete"}:
-        return {"ok": False, "error": "bad action"}
+        return _batch_rejection("bad action")
+    items = body.get("items")
     if not items or not isinstance(items, list):
-        return {"ok": False, "error": "items required"}
+        return _batch_rejection("items required")
 
     done, failed = [], []
-    for it in items:
-        # 逐项调用单条 handler（同线程 RLock 可重入，不会死锁）
-        try:
-            if action == "resolve":
-                r = await resolve(it)
-            elif action == "to-task":
-                r = await to_task(it)
-            elif action == "trash":
-                r = await trash(it)
-            else:
-                r = await complete(it)
-            if r.get("ok"):
-                done.append({"dir": it.get("dir"), "file": r.get("file") or it.get("file"), "entry": it.get("entry_title") or "", "detail": r})
-            else:
-                failed.append({"dir": it.get("dir"), "file": it.get("file"), "entry": it.get("entry_title") or "", "error": r.get("error") or "failed"})
-        except Exception as e:
-            failed.append({"dir": it.get("dir"), "file": it.get("file"), "entry": it.get("entry_title") or "", "error": str(e)})
+    # WB-S1-047 / A2：资格预检与 mutation 同处同一 _WRITE_LOCK 临界区，消除 check/use 竞态——
+    # 不再在外锁读 frontmatter 后假定状态不变。单条 handler 在锁内会再次校验
+    # （complete 校验 status；resolve/to-task/trash 校验分区，分区由 identity 固定不可变），
+    # policy 范围与 handler 实证行为一致，不静默收窄 legacy /batch 请求。
+    with _WRITE_LOCK:
+        seen_identities: set[tuple[str, ...]] = set()
+        normalized_items: list[dict[str, str]] = []
+        for index, raw in enumerate(items):
+            if not isinstance(raw, dict):
+                return _batch_rejection(f"items[{index}] must be an object")
+            dirname = raw.get("dir")
+            fname = raw.get("file")
+            entry = raw.get("entry_title", "")
+            if not isinstance(dirname, str) or not dirname or not isinstance(fname, str) or not fname:
+                return _batch_rejection(f"items[{index}] requires non-empty string dir/file")
+            if not isinstance(entry, str):
+                return _batch_rejection(f"items[{index}].entry_title must be a string")
+            identity = _canonical_batch_identity(action, dirname, fname, entry)
+            if identity is None:
+                return _batch_rejection(f"items[{index}] has invalid identity")
+            if identity in seen_identities:
+                return _batch_rejection(f"duplicate identity at items[{index}]")
+            seen_identities.add(identity)
+            response_entry = entry.strip() if action in {"resolve", "to-task"} else ""
+            normalized_items.append({"dir": dirname, "file": fname, "entry_title": response_entry})
+        for safe_item in normalized_items:
+            # production /batch 在生产路径实际消费 authoritative policy（可导入/可执行 seam）；
+            # 不合法（unknown 分区 / complete 遇非法状态）→ 记 failed 且不调用单项 handler（fail closed）。
+            try:
+                dirname = safe_item["dir"]
+                fname = safe_item["file"]
+                policy_status: str | None = None
+                policy_exec: str | None = None
+                p = _safe_resolve(dirname, fname) if dirname and fname else None
+                if p is not None and p.is_file():
+                    policy_fm = _extract_frontmatter(p.read_text(encoding="utf-8", errors="replace"))[0] or {}
+                    policy_status = str(policy_fm.get("status") or "")
+                    policy_exec = str(policy_fm.get("execution_result") or "")
+                    reason = _policy_ineligible_reason(
+                        dirname or "",
+                        policy_status,
+                        action,
+                        policy_exec if action == "complete" else None,
+                    )
+                    if reason is not None:
+                        failed.append({"dir": dirname, "file": fname, "entry": safe_item["entry_title"], "error": reason})
+                        continue
+            except Exception as e:  # 预检异常不能吞掉单项 handler 的既有定位/状态判定
+                failed.append({"dir": safe_item["dir"], "file": safe_item["file"], "entry": safe_item["entry_title"], "error": str(e)})
+                continue
+            # 逐项调用单条 handler（同线程 RLock 可重入，不会死锁）
+            try:
+                if action == "resolve":
+                    r = await resolve(safe_item)
+                elif action == "to-task":
+                    r = await to_task(safe_item)
+                elif action == "trash":
+                    r = await trash(safe_item)
+                else:
+                    r = await complete(safe_item)
+                if r.get("ok"):
+                    done.append({"dir": safe_item["dir"], "file": safe_item["file"], "entry": safe_item["entry_title"], "detail": r})
+                else:
+                    failed.append({"dir": safe_item["dir"], "file": safe_item["file"], "entry": safe_item["entry_title"], "error": r.get("error") or "failed"})
+            except Exception as e:
+                failed.append({"dir": safe_item["dir"], "file": safe_item["file"], "entry": safe_item["entry_title"], "error": str(e)})
 
     # 统一一条批量日志（不逐条刷）
     if done:
@@ -1181,7 +1256,7 @@ async def complete(body: dict) -> dict:
 
 @router.post("/resolve")
 async def resolve(body: dict) -> dict:
-    """确认/归档：把 pending/queued 条目标记为已处理并移入 已处理/。
+    """确认/归档：把收件箱分区条目归档并移入 已处理/（分区白名单，不校验 status；与 /batch policy 一致）。
 
     body={"dir": "待验证"|"待回看"|"梦中的邮件", "file": "xxx.md"}
     body 可选 entry_title：指定聚合文件内某条 ## 条目 → 只归档该条目（拆条目不拆文件）

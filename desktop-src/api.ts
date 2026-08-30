@@ -345,6 +345,7 @@ export const batchAction = (
     done: Array<{ dir?: string; file?: string; entry?: string }>
     failed: Array<{ dir?: string; file?: string; entry?: string; error?: string }>
     summary: { ok: number; fail: number }
+    error?: string
   }>('/batch', {
     method: 'POST',
     body: { action, items },

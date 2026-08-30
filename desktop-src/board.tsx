@@ -66,6 +66,7 @@ import { WbPreviewDrawer } from './drawer'
 import { TableBoardView, ViewSwitcher } from './views'
 import { HomeView } from './home'
 import { ConversationIndexView } from './conversations'
+import { consumeLegacyBatchResponse } from './batch-response'
 
 const executionDeps: WorkbenchExecutionDeps = {
   prepare: async input => {
@@ -1306,12 +1307,17 @@ export function WorkbenchBoardPage() {
         return { dir, file, ...(entry_title ? { entry_title } : {}) }
       })
       const res = await batchAction(action, items)
-      const okN = res.summary?.ok ?? 0
-      const failN = res.summary?.fail ?? 0
-      host.notify({ kind: failN > 0 ? 'warning' : 'success', message: `批量归档 ${okN} 项${failN ? `，${failN} 项失败` : ''}` })
-      invalidateBoard()
-      setSelected(new Set())
-      setMultiMode(false)
+      consumeLegacyBatchResponse(action, items, res, {
+        notify: notice => host.notify(notice),
+        invalidate: invalidateBoard,
+        replaceSelection: failedItems => setSelected(new Set(failedItems.map(item => JSON.stringify([
+          item.dir,
+          item.file,
+          item.entry_title ?? '',
+        ])))),
+        clearSelection: () => setSelected(new Set()),
+        exitMultiMode: () => setMultiMode(false),
+      })
     } catch (err) {
       host.notify({ kind: 'error', message: String(err) })
     } finally {
