@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
@@ -378,6 +379,10 @@ def test_rollback_failure_becomes_recovery_required_and_double_write_keeps_evide
     assert json.loads(evidence[0].read_text(encoding="utf-8"))["state"] == "recovery-required"
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="Windows MAX_PATH prepare failure only; POSIX supports this path",
+)
 def test_long_root_prepare_fails_before_first_move(tmp_path, monkeypatch):
     root = tmp_path
     while len(str(root / ".batch-undo" / ("a" * 32 + ".prepared.json"))) < 270:
