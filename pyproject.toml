@@ -12,6 +12,7 @@ dependencies = [
 dev = [
   "httpx",
   "pytest",
+  "ruff==0.16.5",
   "websockets",
 ]
 

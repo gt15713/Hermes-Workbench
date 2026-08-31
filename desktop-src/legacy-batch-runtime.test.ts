@@ -30,6 +30,7 @@ describe('legacy Board /batch runtime contract', () => {
   const effects = () => ({
     notify: vi.fn(),
     invalidate: vi.fn(),
+    offerUndo: vi.fn(),
     replaceSelection: vi.fn(),
     clearSelection: vi.fn(),
     exitMultiMode: vi.fn(),
@@ -134,9 +135,65 @@ describe('legacy Board /batch runtime contract', () => {
     })
   })
 
-  it('ignores response entry identity for complete/trash', () => {
+  it('ignores response entry identity for complete', () => {
     expect(settleLegacyBatchResponse('complete', [{ dir: '任务', file: 'a.md', entry_title: 'ignored' }], {
       ok: true, done: [{ dir: '任务', file: 'a.md', entry: '' }], failed: [], summary: { ok: 1, fail: 0 },
     }).valid).toBe(true)
+  })
+
+  it('offers only the authoritative successful trash receipt to the production consumer', () => {
+    const sideEffects = effects()
+    const trashSubmitted = [
+      { dir: '任务', file: 'ok.md' },
+      { dir: '任务', file: 'failed.md' },
+    ]
+    const decision = consumeLegacyBatchResponse('trash', trashSubmitted, {
+      ok: true,
+      done: [{ dir: '任务', file: 'ok.md' }],
+      failed: [{ dir: '任务', file: 'failed.md', error: 'blocked' }],
+      summary: { ok: 1, fail: 1 },
+      operation_id: '0123456789abcdef0123456789abcdef',
+      undo_receipt: {
+        schema: 'workbench.batch-trash-undo',
+        version: 2,
+        operation_id: '0123456789abcdef0123456789abcdef',
+        action: 'trash',
+        expires_at: '2026-08-30T12:15:00+00:00',
+        items: [{ dir: '任务', file: 'ok.md' }],
+      },
+    }, sideEffects)
+
+    expect(decision.valid).toBe(true)
+    expect(sideEffects.offerUndo).toHaveBeenCalledOnce()
+    expect(sideEffects.offerUndo).toHaveBeenCalledWith(expect.objectContaining({
+      action: 'trash',
+      items: [{ dir: '任务', file: 'ok.md' }],
+    }))
+  })
+
+  it('rejects a trash receipt that mixes a failed identity before UI side effects', () => {
+    const sideEffects = effects()
+    const trashSubmitted = [
+      { dir: '任务', file: 'ok.md' },
+      { dir: '任务', file: 'failed.md' },
+    ]
+    const decision = consumeLegacyBatchResponse('trash', trashSubmitted, {
+      ok: true,
+      done: [{ dir: '任务', file: 'ok.md' }],
+      failed: [{ dir: '任务', file: 'failed.md', error: 'blocked' }],
+      summary: { ok: 1, fail: 1 },
+      operation_id: '0123456789abcdef0123456789abcdef',
+      undo_receipt: {
+        operation_id: '0123456789abcdef0123456789abcdef',
+        action: 'trash',
+        expires_at: '2026-08-30T12:15:00+00:00',
+        items: [{ dir: '任务', file: 'ok.md' }, { dir: '任务', file: 'failed.md' }],
+      },
+    }, sideEffects)
+
+    expect(decision).toMatchObject({ valid: false, classification: 'protocol-error' })
+    expect(sideEffects.offerUndo).not.toHaveBeenCalled()
+    expect(sideEffects.invalidate).not.toHaveBeenCalled()
+    expect(sideEffects.replaceSelection).not.toHaveBeenCalled()
   })
 })

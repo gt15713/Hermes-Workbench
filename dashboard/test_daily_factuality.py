@@ -130,7 +130,7 @@ def test_weekly_totals_count_items_not_files(tmp_path):
         for d in ("待回看", "已处理"):
             (tmp_path / d).mkdir(parents=True, exist_ok=True)
         (tmp_path / "待回看" / "2026-08-24.md").write_text(
-            "# 待回看 2026-08-24\n---\nstatus: pending\n---\n\n## 待确认条目A\n\n## 待确认条目B\n",
+            "# 待回看 2026-08-24\n---\nstatus: pending\ncreated: 2026-08-24\n---\n\n## 待确认条目A\n\n## 待确认条目B\n",
             encoding="utf-8",
         )
         import datetime as _dt

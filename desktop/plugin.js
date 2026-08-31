@@ -256,6 +256,10 @@ var batchAction = (action, items) => call("/batch", {
   method: "POST",
   body: { action, items }
 });
+var undoBatchTrash = (receipt) => call("/batch/undo", {
+  method: "POST",
+  body: receipt
+});
 
 // desktop-src/board.tsx
 import {
@@ -1054,6 +1058,8 @@ function validateBatchResponse(input) {
   const failed = parseRows(input.failed, "failed");
   if (!failed.valid) return failed;
   if (input.error !== void 0 && typeof input.error !== "string") return invalid("响应 error 必须是 string");
+  const undo = parseUndoReceipt(input.operation_id, input.undo_receipt);
+  if (!undo.valid) return undo;
   return {
     valid: true,
     response: {
@@ -1061,7 +1067,8 @@ function validateBatchResponse(input) {
       done: done.rows,
       failed: failed.rows,
       summary: { ok, fail },
-      ...input.error === void 0 ? {} : { error: input.error }
+      ...input.error === void 0 ? {} : { error: input.error },
+      ...undo.receipt === void 0 ? {} : { operation_id: undo.receipt.operation_id, undo_receipt: undo.receipt }
     }
   };
 }
@@ -1093,9 +1100,20 @@ function settleLegacyBatchResponse(action, submitted, input) {
   if (actual.size !== expected.size || [...actual].some((identity) => !expected.has(identity))) {
     return invalid("done/failed identity 必须属于并精确覆盖 submitted");
   }
+  const receipt = response.undo_receipt;
+  if (action === "trash" && response.done.length > 0) {
+    if (!receipt) return invalid("trash 成功响应必须包含 authoritative undo receipt");
+    const doneIdentities = response.done.map((row) => batchIdentity("trash", row.dir, row.file, ""));
+    const receiptIdentities = receipt.items.map((item) => batchIdentity("trash", item.dir, item.file, ""));
+    if (receiptIdentities.length !== doneIdentities.length || receiptIdentities.some((identity, index) => identity !== doneIdentities[index])) {
+      return invalid("undo receipt identities 必须精确等于 trash done identities");
+    }
+  } else if (receipt) {
+    return invalid("undo receipt 只允许用于有成功项的 trash 响应");
+  }
   return validation;
 }
-function consumeLegacyBatchResponse(action, submitted, input, effects) {
+function consumeBatchResponse(action, submitted, input, effects) {
   const decision = settleLegacyBatchResponse(action, submitted, input);
   if (!decision.valid) {
     effects.notify({ kind: "error", message: decision.error });
@@ -1107,15 +1125,97 @@ function consumeLegacyBatchResponse(action, submitted, input, effects) {
   const failureDetails = decision.response.failed.map((row) => `${row.entry?.trim() || row.file}: ${row.error || "操作失败"}`).join("；");
   effects.notify({
     kind: failN > 0 ? "warning" : "success",
-    message: `批量归档 ${okN} 项${failN ? `，${failN} 项失败：${failureDetails}` : ""}`
+    message: `${action === "trash" ? "批量移入回收站" : "批量归档"} ${okN} 项${failN ? `，${failN} 项失败：${failureDetails}` : ""}`
   });
   if (okN > 0) effects.invalidate();
+  if (action === "trash" && decision.response.undo_receipt) effects.offerUndo(decision.response.undo_receipt);
   if (failN > 0) {
     effects.replaceSelection(failedItems);
   } else {
     effects.clearSelection();
     effects.exitMultiMode();
   }
+  return decision;
+}
+var consumeLegacyBatchResponse = consumeBatchResponse;
+function validateBatchUndoResponse(expected, input) {
+  if (!isRecord(input) || typeof input.ok !== "boolean") return invalidUndo("响应 ok 必须是 boolean");
+  if (!Array.isArray(input.restored) || !Array.isArray(input.failed) || !isRecord(input.summary)) {
+    return invalidUndo("restored/failed/summary 形状无效");
+  }
+  if (!isCount(input.summary.restored) || !isCount(input.summary.failed)) return invalidUndo("summary 计数无效");
+  if (!isRecord(input.receipt) || input.receipt.schema !== "workbench.batch-trash-undo" || input.receipt.version !== 2 || input.receipt.operation_id !== expected.operation_id || input.receipt.action !== "trash" || typeof input.receipt.consumed !== "boolean") {
+    return invalidUndo("receipt operation/action/consumed 不匹配");
+  }
+  if (input.error !== void 0 && typeof input.error !== "string") return invalidUndo("error 必须是 string");
+  const restored = [];
+  const failed = [];
+  const actual = /* @__PURE__ */ new Set();
+  for (let index = 0; index < input.restored.length; index += 1) {
+    const row = input.restored[index];
+    if (!isRecord(row) || Object.keys(row).sort().join(",") !== "dir,file" || typeof row.dir !== "string" || typeof row.file !== "string") {
+      return invalidUndo(`restored[${index}] identity 无效`);
+    }
+    const identity = batchIdentity("trash", row.dir, row.file, "");
+    if (!identity || actual.has(identity)) return invalidUndo("restored/failed identity 必须唯一");
+    actual.add(identity);
+    restored.push({ dir: row.dir, file: row.file });
+  }
+  for (let index = 0; index < input.failed.length; index += 1) {
+    const row = input.failed[index];
+    if (!isRecord(row) || Object.keys(row).sort().join(",") !== "dir,error,file" || typeof row.dir !== "string" || typeof row.file !== "string" || typeof row.error !== "string") {
+      return invalidUndo(`failed[${index}] identity/error 无效`);
+    }
+    const identity = batchIdentity("trash", row.dir, row.file, "");
+    if (!identity || actual.has(identity)) return invalidUndo("restored/failed identity 必须唯一");
+    actual.add(identity);
+    failed.push({ dir: row.dir, file: row.file, error: row.error });
+  }
+  if (input.summary.restored !== restored.length || input.summary.failed !== failed.length) {
+    return invalidUndo("summary 与 restored/failed 长度不一致");
+  }
+  if (!input.receipt.consumed) {
+    if (input.ok || actual.size !== 0 || input.summary.restored !== 0 || input.summary.failed !== 0 || typeof input.error !== "string" || !input.error) {
+      return invalidUndo("未消费拒绝必须零移动并带可行动 error");
+    }
+  } else {
+    const expectedIdentities = expected.items.map((item) => batchIdentity("trash", item.dir, item.file, ""));
+    if (actual.size !== expectedIdentities.length || expectedIdentities.some((identity) => !identity || !actual.has(identity))) {
+      return invalidUndo("terminal consumed 必须精确结算 receipt 全部 identities");
+    }
+    if (input.ok !== restored.length > 0) return invalidUndo("ok 与 restored 数量不一致");
+  }
+  return {
+    valid: true,
+    response: {
+      ok: input.ok,
+      restored,
+      failed,
+      summary: { restored: input.summary.restored, failed: input.summary.failed },
+      receipt: { schema: "workbench.batch-trash-undo", version: 2, operation_id: expected.operation_id, action: "trash", consumed: input.receipt.consumed },
+      ...input.error === void 0 ? {} : { error: input.error }
+    }
+  };
+}
+function consumeBatchUndoResponse(expected, input, effects) {
+  const decision = validateBatchUndoResponse(expected, input);
+  if (!decision.valid) {
+    effects.notify({ kind: "error", message: decision.error });
+    effects.retainReceipt?.();
+    return decision;
+  }
+  const response = decision.response;
+  if (!response.receipt.consumed) {
+    effects.notify({ kind: "error", message: response.error || "撤销移入回收站被拒绝，receipt 已保留" });
+    effects.retainReceipt?.();
+    return decision;
+  }
+  if (response.restored.length > 0) effects.invalidate();
+  effects.notify({
+    kind: response.failed.length > 0 ? "warning" : "success",
+    message: `撤销移入回收站：恢复 ${response.restored.length} 项${response.failed.length ? `，${response.failed.length} 项失败；本 receipt 已终结，不可再次撤销：${response.failed.map((item) => `${item.file}: ${item.error}`).join("；")}` : ""}`
+  });
+  effects.clearReceipt();
   return decision;
 }
 function batchIdentity(action, dir, file, entry) {
@@ -1156,6 +1256,23 @@ function parseRows(value, label) {
   }
   return { valid: true, rows };
 }
+function parseUndoReceipt(operationId, value) {
+  if (operationId === void 0 && value === void 0) return { valid: true };
+  if (typeof operationId !== "string" || !/^[0-9a-f]{32}$/.test(operationId)) return invalid("operation_id 必须是 32 位小写 hex");
+  if (!isRecord(value) || value.schema !== "workbench.batch-trash-undo" || value.version !== 2) return invalid("undo_receipt schema/version 不支持");
+  if (value.operation_id !== operationId || value.action !== "trash") return invalid("undo_receipt operation/action 不匹配");
+  if (typeof value.expires_at !== "string" || !Number.isFinite(Date.parse(value.expires_at))) return invalid("undo_receipt expires_at 无效");
+  if (!Array.isArray(value.items) || value.items.length === 0) return invalid("undo_receipt items 必须非空");
+  const items = [];
+  for (let index = 0; index < value.items.length; index += 1) {
+    const item = value.items[index];
+    if (!isRecord(item) || Object.keys(item).sort().join(",") !== "dir,file" || typeof item.dir !== "string" || typeof item.file !== "string") {
+      return invalid(`undo_receipt items[${index}] 必须只有 string dir/file`);
+    }
+    items.push({ dir: item.dir, file: item.file });
+  }
+  return { valid: true, receipt: { schema: "workbench.batch-trash-undo", version: 2, operation_id: operationId, action: "trash", expires_at: value.expires_at, items } };
+}
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -1167,6 +1284,9 @@ function invalid(error) {
 }
 function globalRejection(error) {
   return { valid: false, classification: "global-rejection", error };
+}
+function invalidUndo(error) {
+  return { valid: false, classification: "protocol-error", error: `撤销移入回收站响应协议错误：${error}` };
 }
 
 // desktop-src/home-model.ts
@@ -2097,6 +2217,7 @@ function HomeView({ board, onPreview, onOpenLegacy }) {
   const showAllRegion = presentation.expandedRegion;
   const openShowAll = (regionId) => dispatchView({ type: "show-all", regionId });
   const [batchBusy, setBatchBusy] = useState2(false);
+  const [pendingTrashUndo, setPendingTrashUndo] = useState2(null);
   const batchGateRef = useRef(new BatchGate());
   const [batchFeedback, setBatchFeedback] = useState2(null);
   const runBatch = async (action) => {
@@ -2123,18 +2244,30 @@ function HomeView({ board, onPreview, onOpenLegacy }) {
         }
       });
       if (outcome === null) return;
+      if (outcome.transportError === void 0) {
+        const decision = consumeBatchResponse(action, submission.items, outcome.response, {
+          notify: (notice) => host2.notify(notice),
+          invalidate: invalidateBoard,
+          offerUndo: (receipt) => setPendingTrashUndo(receipt),
+          replaceSelection: () => void 0,
+          clearSelection: () => void 0,
+          exitMultiMode: () => void 0
+        });
+        if (!decision.valid) {
+          dispatchView({ type: "batch-settle", multiSelectOpen: true, selectedIds: presentation.selectedIds });
+          setBatchFeedback({ failed: [], overall: decision.error });
+          return;
+        }
+      }
       const settlement = settleBatchResponse(
         viewState,
         outcome.transportError !== void 0 ? { transportError: outcome.transportError } : outcome.response,
         presentation.selectedIds
       );
       if (settlement.settledCleanly) {
-        host2.notify({ kind: "success", message: `批量${HOME_BATCH_ACTION_LABEL[action]} ${settlement.removedCount} 项` });
-        invalidateBoard();
         dispatchView({ type: "batch-settled" });
         setBatchFeedback(null);
       } else {
-        if (settlement.removedCount > 0) invalidateBoard();
         dispatchView({ type: "batch-settle", multiSelectOpen: settlement.keepOpen, selectedIds: settlement.selectedIds });
         setBatchFeedback(
           settlement.failedDetail.length > 0 || settlement.overallError ? { failed: settlement.failedDetail, overall: settlement.overallError } : null
@@ -2144,10 +2277,35 @@ function HomeView({ board, onPreview, onOpenLegacy }) {
       setBatchBusy(false);
     }
   };
+  const runTrashUndo = async () => {
+    if (!pendingTrashUndo || batchBusy) return;
+    setBatchBusy(true);
+    try {
+      const result = await undoBatchTrash(pendingTrashUndo);
+      consumeBatchUndoResponse(pendingTrashUndo, result, {
+        notify: (notice) => host2.notify(notice),
+        invalidate: invalidateBoard,
+        clearReceipt: () => setPendingTrashUndo(null),
+        retainReceipt: () => void 0
+      });
+    } catch (err) {
+      host2.notify({ kind: "error", message: `撤销移入回收站失败，receipt 已保留：${String(err)}` });
+    } finally {
+      setBatchBusy(false);
+    }
+  };
   const selectedSet = useMemo2(() => new Set(presentation.selectedIds), [presentation.selectedIds]);
   const healthState = health.isLoading ? "loading" : health.error ? "unreachable" : !health.data || health.data.status === "green" || health.data.status === "disabled" ? "ok" : "degraded";
   return /* @__PURE__ */ jsxs3("div", { className: "flex flex-1 flex-col overflow-y-auto px-3 pb-3", children: [
     /* @__PURE__ */ jsx3("p", { className: "mt-2 px-1 text-[0.8125rem] text-(--ui-text-tertiary)", children: "手机收进来的东西，在这里审核、继续、沉淀。" }),
+    pendingTrashUndo && /* @__PURE__ */ jsxs3("div", { "data-wb-home-trash-undo": true, className: "mt-2 flex items-center justify-between gap-2 rounded-lg border border-(--ui-accent)/40 bg-(--ui-bg-elevated) px-3 py-2", children: [
+      /* @__PURE__ */ jsxs3("span", { className: "text-[0.8125rem] text-(--ui-text-secondary)", children: [
+        "已批量移入回收站 ",
+        pendingTrashUndo.items.length,
+        " 项"
+      ] }),
+      /* @__PURE__ */ jsx3("button", { type: "button", disabled: batchBusy, onClick: runTrashUndo, className: "rounded border border-(--ui-accent)/50 px-2 py-1 text-[0.75rem] text-(--ui-text-primary) disabled:opacity-50", children: "撤销移入回收站" })
+    ] }),
     /* @__PURE__ */ jsxs3("div", { className: "relative mt-1 px-1", children: [
       /* @__PURE__ */ jsx3(
         "input",
@@ -3452,6 +3610,7 @@ function WorkbenchBoardPage() {
   const [multiMode, setMultiMode] = useState4(false);
   const [selected, setSelected] = useState4(/* @__PURE__ */ new Set());
   const [batchBusy, setBatchBusy] = useState4(false);
+  const [pendingTrashUndo, setPendingTrashUndo] = useState4(null);
   const [searchQ, setSearchQ] = useState4("");
   const [debouncedQ, setDebouncedQ] = useState4("");
   const [searchOpen, setSearchOpen] = useState4(false);
@@ -3506,6 +3665,7 @@ function WorkbenchBoardPage() {
       consumeLegacyBatchResponse(action, items, res, {
         notify: (notice) => host4.notify(notice),
         invalidate: invalidateBoard,
+        offerUndo: (receipt) => setPendingTrashUndo(receipt),
         replaceSelection: (failedItems) => setSelected(new Set(failedItems.map((item) => JSON.stringify([
           item.dir,
           item.file,
@@ -3513,6 +3673,23 @@ function WorkbenchBoardPage() {
         ])))),
         clearSelection: () => setSelected(/* @__PURE__ */ new Set()),
         exitMultiMode: () => setMultiMode(false)
+      });
+    } catch (err) {
+      host4.notify({ kind: "error", message: String(err) });
+    } finally {
+      setBatchBusy(false);
+    }
+  };
+  const runTrashUndo = async () => {
+    if (!pendingTrashUndo || batchBusy) return;
+    setBatchBusy(true);
+    try {
+      const result = await undoBatchTrash(pendingTrashUndo);
+      consumeBatchUndoResponse(pendingTrashUndo, result, {
+        notify: (notice) => host4.notify(notice),
+        invalidate: invalidateBoard,
+        clearReceipt: () => setPendingTrashUndo(null),
+        retainReceipt: () => void 0
       });
     } catch (err) {
       host4.notify({ kind: "error", message: String(err) });
@@ -3773,11 +3950,19 @@ function WorkbenchBoardPage() {
       ] }),
       /* @__PURE__ */ jsx5(Button2, { size: "sm", variant: "outline", disabled: batchBusy || selected.size === 0, onClick: () => runBatch("complete"), children: "批量归档" }),
       /* @__PURE__ */ jsx5(Button2, { size: "sm", variant: "outline", disabled: batchBusy || selected.size === 0, onClick: () => runBatch("resolve"), children: "批量归档" }),
-      /* @__PURE__ */ jsx5(Button2, { size: "sm", variant: "outline", disabled: batchBusy || selected.size === 0, onClick: () => runBatch("trash"), children: "批量删除" }),
+      /* @__PURE__ */ jsx5(Button2, { size: "sm", variant: "outline", disabled: batchBusy || selected.size === 0, onClick: () => runBatch("trash"), children: "批量移入回收站" }),
       /* @__PURE__ */ jsx5(Button2, { size: "sm", variant: "outline", onClick: () => {
         setSelected(/* @__PURE__ */ new Set());
         setMultiMode(false);
       }, children: "取消" })
+    ] }),
+    pendingTrashUndo && /* @__PURE__ */ jsxs5("div", { className: "flex items-center gap-2 border-b border-(--ui-stroke-secondary) bg-(--ui-accent)/5 px-3 py-1.5", children: [
+      /* @__PURE__ */ jsxs5("span", { className: "text-[0.8125rem] text-(--ui-text-secondary)", children: [
+        "已移入回收站 ",
+        pendingTrashUndo.items.length,
+        " 项"
+      ] }),
+      /* @__PURE__ */ jsx5(Button2, { size: "sm", variant: "outline", disabled: batchBusy, onClick: runTrashUndo, children: "撤销移入回收站" })
     ] }),
     showConversations ? /* @__PURE__ */ jsx5(
       ConversationIndexView,

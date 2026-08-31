@@ -12,7 +12,8 @@
 import { cn, Codicon, host, useQuery } from '@hermes/plugin-sdk'
 import { useEffect, useMemo, useReducer, useRef, useState } from 'react'
 
-import { batchAction, fetchBrief, fetchHealth, fetchSearch, ingestMessage, invalidateBoard, type WbBriefCard } from './api'
+import { batchAction, fetchBrief, fetchHealth, fetchSearch, ingestMessage, invalidateBoard, undoBatchTrash, type WbBriefCard } from './api'
+import { consumeBatchResponse, consumeBatchUndoResponse, type BatchUndoReceipt } from './batch-response'
 import { homeCardPrimaryAction } from './card-action'
 import {
   HOME_BATCH_ACTION_LABEL,
@@ -535,6 +536,7 @@ export function HomeView({ board, onPreview, onOpenLegacy }: {
     // 并发第二次提交不调用 transport（guardedSubmit 实测）；响应结算走 settleBatchResponse seam，
     // 部分/全失败不清空不伪造成功，只移除后端明确成功的条目）
     const [batchBusy, setBatchBusy] = useState(false)
+    const [pendingTrashUndo, setPendingTrashUndo] = useState<BatchUndoReceipt | null>(null)
     const batchGateRef = useRef(new BatchGate())
     const [batchFeedback, setBatchFeedback] = useState<{ failed: Array<{ id: string; dir: string; file: string; reason: string }>; overall: string | null } | null>(null)
     const runBatch = async (action: HomeBatchAction) => {
@@ -563,18 +565,30 @@ export function HomeView({ board, onPreview, onOpenLegacy }: {
           }
         })
         if (outcome === null) return // 并发第二次提交被 gate 拦下，transport 未被调用
+        if (outcome.transportError === undefined) {
+          const decision = consumeBatchResponse(action, submission.items, outcome.response, {
+            notify: notice => host.notify(notice),
+            invalidate: invalidateBoard,
+            offerUndo: receipt => setPendingTrashUndo(receipt),
+            replaceSelection: () => undefined,
+            clearSelection: () => undefined,
+            exitMultiMode: () => undefined,
+          })
+          if (!decision.valid) {
+            dispatchView({ type: 'batch-settle', multiSelectOpen: true, selectedIds: presentation.selectedIds })
+            setBatchFeedback({ failed: [], overall: decision.error })
+            return
+          }
+        }
         const settlement = settleBatchResponse(
           viewState,
           outcome.transportError !== undefined ? { transportError: outcome.transportError } : outcome.response!,
           presentation.selectedIds,
         )
         if (settlement.settledCleanly) {
-          host.notify({ kind: 'success', message: `批量${HOME_BATCH_ACTION_LABEL[action]} ${settlement.removedCount} 项` })
-          invalidateBoard() // 全成功：invalidate authoritative board
           dispatchView({ type: 'batch-settled' }) // 退出多选并清空
           setBatchFeedback(null)
         } else {
-          if (settlement.removedCount > 0) invalidateBoard() // 部分成功：invalidate board，保留多选与失败集
           dispatchView({ type: 'batch-settle', multiSelectOpen: settlement.keepOpen, selectedIds: settlement.selectedIds })
           setBatchFeedback(
             settlement.failedDetail.length > 0 || settlement.overallError
@@ -582,6 +596,23 @@ export function HomeView({ board, onPreview, onOpenLegacy }: {
               : null,
           )
         }
+      } finally {
+        setBatchBusy(false)
+      }
+    }
+    const runTrashUndo = async () => {
+      if (!pendingTrashUndo || batchBusy) return
+      setBatchBusy(true)
+      try {
+        const result = await undoBatchTrash(pendingTrashUndo)
+        consumeBatchUndoResponse(pendingTrashUndo, result, {
+          notify: notice => host.notify(notice),
+          invalidate: invalidateBoard,
+          clearReceipt: () => setPendingTrashUndo(null),
+          retainReceipt: () => undefined,
+        })
+      } catch (err) {
+        host.notify({ kind: 'error', message: `撤销移入回收站失败，receipt 已保留：${String(err)}` })
       } finally {
         setBatchBusy(false)
       }
@@ -600,6 +631,15 @@ export function HomeView({ board, onPreview, onOpenLegacy }: {
       <p className="mt-2 px-1 text-[0.8125rem] text-(--ui-text-tertiary)">
         手机收进来的东西，在这里审核、继续、沉淀。
       </p>
+
+      {pendingTrashUndo && (
+        <div data-wb-home-trash-undo className="mt-2 flex items-center justify-between gap-2 rounded-lg border border-(--ui-accent)/40 bg-(--ui-bg-elevated) px-3 py-2">
+          <span className="text-[0.8125rem] text-(--ui-text-secondary)">已批量移入回收站 {pendingTrashUndo.items.length} 项</span>
+          <button type="button" disabled={batchBusy} onClick={runTrashUndo} className="rounded border border-(--ui-accent)/50 px-2 py-1 text-[0.75rem] text-(--ui-text-primary) disabled:opacity-50">
+            撤销移入回收站
+          </button>
+        </div>
+      )}
 
       {/* Task 6：顶部常驻搜索（复用既有 /search 与索引） */}
       <div className="relative mt-1 px-1">

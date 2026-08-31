@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import re
@@ -22,7 +23,8 @@ import sys as _sys
 import threading
 import time
 import uuid
-from datetime import datetime
+from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -113,6 +115,763 @@ def _canonical_batch_identity(action: str, dirname: str, filename: str, entry: s
     if action in {"resolve", "to-task"}:
         return (canonical_path, entry.strip())
     return (canonical_path,)
+
+
+_BATCH_UNDO_TTL = timedelta(minutes=15)
+# One authoritative cross-process lease TTL. Tests patch this constant or the clock; production never waits for expiry.
+_BATCH_UNDO_CLAIM_TTL = timedelta(minutes=10)
+_BATCH_UNDO_RELEASE_RETRIES = 3
+_BATCH_UNDO_SCHEMA = "workbench.batch-trash-undo"
+_BATCH_UNDO_VERSION = 2
+
+# A process-local registry is only an additional fact for the exact owner identity.
+# It never overrides a foreign live/unknown owner and is guarded for concurrent recovery workers.
+_BATCH_UNDO_CLAIM_REGISTRY_LOCK = threading.RLock()
+_INACTIVE_BATCH_UNDO_CLAIMS: set[tuple[int, str, str]] = set()
+
+
+def _claim_registry_key(claim: dict) -> tuple[int, str, str] | None:
+    try:
+        owner = claim["owner"]
+        claim_id = str(claim["claim_id"])
+        if not re.fullmatch(r"[0-9a-f]{32}", claim_id) or str(owner["lease_id"]) != claim_id:
+            return None
+        return int(owner["pid"]), str(owner["process_start_identity"]), claim_id
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _mark_claim_active(claim: dict) -> None:
+    key = _claim_registry_key(claim)
+    if key is not None:
+        with _BATCH_UNDO_CLAIM_REGISTRY_LOCK:
+            _INACTIVE_BATCH_UNDO_CLAIMS.discard(key)
+
+
+def _mark_claim_inactive(claim: dict) -> None:
+    key = _claim_registry_key(claim)
+    if key is not None:
+        with _BATCH_UNDO_CLAIM_REGISTRY_LOCK:
+            _INACTIVE_BATCH_UNDO_CLAIMS.add(key)
+
+
+def _is_same_process_inactive_claim(claim: dict) -> bool:
+    key = _claim_registry_key(claim)
+    if key is None or key[0] != os.getpid():
+        return False
+    with _BATCH_UNDO_CLAIM_REGISTRY_LOCK:
+        return key in _INACTIVE_BATCH_UNDO_CLAIMS
+
+
+def _batch_undo_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _batch_undo_rejection(error: str, operation_id: str | None = None) -> dict:
+    response = {
+        "ok": False,
+        "restored": [],
+        "failed": [],
+        "summary": {"restored": 0, "failed": 0},
+        "error": error,
+    }
+    if isinstance(operation_id, str) and re.fullmatch(r"[0-9a-f]{32}", operation_id):
+        response["receipt"] = {
+            "schema": _BATCH_UNDO_SCHEMA,
+            "version": _BATCH_UNDO_VERSION,
+            "operation_id": operation_id,
+            "action": "trash",
+            "consumed": False,
+        }
+    return response
+
+
+def _batch_undo_dir() -> Path:
+    return WORKBENCH_ROOT / ".batch-undo"
+
+
+def _batch_undo_path(operation_id: str) -> Path | None:
+    if re.fullmatch(r"[0-9a-f]{32}", operation_id) is None:
+        return None
+    return _batch_undo_dir() / f"{operation_id}.json"
+
+
+def _batch_undo_prepared_path(operation_id: str) -> Path:
+    return _batch_undo_dir() / f"{operation_id}.prepared.json"
+
+
+def _batch_undo_claim_path(operation_id: str) -> Path:
+    return _batch_undo_dir() / f"{operation_id}.claim.json"
+
+
+@contextmanager
+def _batch_undo_ownership_lock(operation_id: str):
+    """Serialize claim/reclaim/release transitions across processes."""
+    lock_path = _batch_undo_dir() / f"{operation_id}.ownership.lock"
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as handle:
+        if os.name == "nt":
+            import msvcrt
+            handle.seek(0, 2)
+            if handle.tell() == 0:
+                handle.write(b"0")
+                handle.flush()
+            handle.seek(0)
+            deadline = time.monotonic() + 3.0
+            while True:
+                try:
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("batch undo ownership lock timeout") from None
+                    time.sleep(0.02)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                import msvcrt
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _write_claim_file(claim: dict, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".claim-{uuid.uuid4().hex[:12]}.tmp")
+    try:
+        with tmp.open("wb") as handle:
+            handle.write(json.dumps(claim, ensure_ascii=False, indent=2).encode("utf-8"))
+            handle.write(b"\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _current_claim_owner() -> dict:
+    import psutil
+    pid = os.getpid()
+    start = psutil.Process(pid).create_time()
+    return {"pid": pid, "process_start_identity": f"{start:.6f}", "lease_id": uuid.uuid4().hex}
+
+
+def _claim_owner_liveness(owner: object) -> str:
+    """Return live/dead/mismatch/unknown; AccessDenied is never treated as dead."""
+    if not isinstance(owner, dict):
+        return "unknown"
+    try:
+        pid = int(owner["pid"])
+        expected = float(owner["process_start_identity"])
+    except (KeyError, TypeError, ValueError):
+        return "unknown"
+    try:
+        import psutil
+        process = psutil.Process(pid)
+        actual = process.create_time()
+        if abs(actual - expected) > 0.000001:
+            return "mismatch"
+        return "live" if process.is_running() else "dead"
+    except psutil.NoSuchProcess:
+        return "dead"
+    except psutil.AccessDenied:
+        return "unknown"
+    except psutil.Error:
+        return "unknown"
+
+
+def _claim_matches(left: dict, right: dict) -> bool:
+    return left.get("claim_id") == right.get("claim_id") and left.get("owner") == right.get("owner")
+
+
+def _write_batch_undo_record(record: dict, path: Path | None = None) -> None:
+    """Durably replace one ledger record; never stores task content."""
+    directory = _batch_undo_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    if path is None:
+        state = record.get("state")
+        path = (
+            _batch_undo_prepared_path(record["operation_id"])
+            if state in {"prepared", "inflight", "aborted"}
+            else directory / f"{record['operation_id']}.json"
+        )
+    # Bounded transient name: do not repeat the ledger basename/UUID on Windows.
+    tmp = path.with_name(f".u-{uuid.uuid4().hex[:12]}.tmp")
+    try:
+        with tmp.open("w", encoding="utf-8", newline="\n") as handle:
+            json.dump(record, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, path)
+    finally:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def _file_digest(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _receipt_from_batch_undo_record(record: dict) -> dict:
+    return {
+        "schema": _BATCH_UNDO_SCHEMA,
+        "version": _BATCH_UNDO_VERSION,
+        "operation_id": record["operation_id"],
+        "action": "trash",
+        "expires_at": record["expires_at"],
+        "items": [
+            {"dir": item["dir"], "file": item["file"]}
+            for item in record["items"]
+            if item.get("state") == "moved" or record.get("version") == 1
+        ],
+    }
+
+
+def _remove_inserted_trash_metadata(path: Path, item: dict) -> None:
+    if not item.get("origin_added") or not path.is_file():
+        return
+    text = path.read_text(encoding="utf-8", errors="replace")
+    lines = text.splitlines(keepends=True)
+    exact_origin = f"origin: {item['dir']}/{item['file']}"
+    kept = []
+    removed_origin = False
+    removed_date = False
+    for line in lines:
+        stripped = line.strip()
+        if not removed_origin and stripped == exact_origin:
+            removed_origin = True
+            continue
+        if not removed_date and re.fullmatch(r"trashed_at:\s*\d{4}-\d{2}-\d{2}", stripped):
+            removed_date = True
+            continue
+        kept.append(line)
+    text = "".join(kept)
+    _atomic_write(path, text)
+
+
+def _write_batch_recovery_evidence(record: dict, error: str) -> None:
+    """Last-resort durable locator when the normal recovery ledger cannot be replaced."""
+    directory = _batch_undo_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / f"{record['operation_id']}.recovery-evidence.json"
+    evidence = {
+        "schema": _BATCH_UNDO_SCHEMA,
+        "version": _BATCH_UNDO_VERSION,
+        "operation_id": record["operation_id"],
+        "state": "recovery-required",
+        "recorded_at": _batch_undo_now().isoformat(),
+        "error": error,
+        "items": [{
+            "dir": item.get("dir"), "file": item.get("file"),
+            "trash_file": item.get("trash_file"), "state": item.get("state"),
+            "post_state": item.get("post_state"),
+        } for item in record.get("items") or []],
+    }
+    payload = (json.dumps(evidence, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+    except FileExistsError:
+        return
+    try:
+        os.write(fd, payload)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _rollback_batch_trash_record(record: dict) -> list[str]:
+    """Rollback only exact identities from the durable record; never scans."""
+    errors = []
+    for item in reversed(record.get("items") or []):
+        source = _safe_resolve(str(item.get("dir") or ""), str(item.get("file") or ""))
+        trash = _safe_resolve("回收站", str(item.get("trash_file") or ""))
+        if source is None or trash is None:
+            errors.append("invalid durable rollback identity")
+            continue
+        if trash.is_file() and not source.exists():
+            try:
+                _remove_inserted_trash_metadata(trash, item)
+                source.parent.mkdir(parents=True, exist_ok=True)
+                _rename_with_retry(trash, source)
+                item["state"] = "rolled_back"
+                item.pop("post_state", None)
+            except Exception as exc:
+                errors.append(f"{item.get('dir')}/{item.get('file')}: {exc}")
+        elif source.is_file() and not trash.exists():
+            item["state"] = "rolled_back"
+            item.pop("post_state", None)
+        else:
+            errors.append(f"{item.get('dir')}/{item.get('file')}: rollback collision or missing")
+    record["state"] = "recovery-required" if errors else "aborted"
+    record["aborted_at"] = _batch_undo_now().isoformat()
+    record["recovery_errors"] = errors
+    try:
+        _write_batch_undo_record(record, _batch_undo_prepared_path(record["operation_id"]))
+    except OSError as exc:
+        _write_batch_recovery_evidence(record, f"recovery ledger write failed: {exc}")
+    return errors
+
+
+def _outcome_from_claimed_record(record: dict) -> tuple[list, list]:
+    """Derive the authoritative terminal outcome purely from filesystem truth.
+
+    Every item in the claimed ledger is classified as restored (source restatable,
+    trash gone) or failed (anything else). This guarantees a terminal response always
+    carries the FULL set of exact identities — never a partial zero-move masquerade.
+    """
+    restored, failed = [], []
+    for item in record.get("items") or []:
+        source = _safe_resolve(str(item.get("dir") or ""), str(item.get("file") or ""))
+        trash = _safe_resolve("回收站", str(item.get("trash_file") or ""))
+        identity = {"dir": item.get("dir"), "file": item.get("file")}
+        if source is not None and source.is_file() and trash is not None and not trash.exists():
+            restored.append(identity)
+        else:
+            failed.append({**identity, "error": str(item.get("undo_error") or "interrupted restore not applied")})
+    return restored, failed
+
+
+def _settle_claimed_record(record: dict) -> None:
+    """Settle an orphaned claimed operation from exact authoritative paths."""
+    restored, failed = _outcome_from_claimed_record(record)
+    for item in record.get("items") or []:
+        source = _safe_resolve(str(item.get("dir") or ""), str(item.get("file") or ""))
+        trash = _safe_resolve("回收站", str(item.get("trash_file") or ""))
+        item["undo_state"] = "restored" if (source is not None and source.is_file() and trash is not None and not trash.exists()) else "failed"
+    record["state"] = "consumed"
+    record["consumed_at"] = _batch_undo_now().isoformat()
+    record["outcome"] = {"restored": restored, "failed": failed}
+    _write_batch_undo_record(record, _batch_undo_path(record["operation_id"]))
+
+
+def _recover_batch_undo_operations() -> None:
+    """Recover every known v2 transaction state by exact durable identity."""
+    directory = _batch_undo_dir()
+    if not directory.is_dir():
+        return
+    for path in directory.glob("*.prepared.json"):
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if record.get("schema") != _BATCH_UNDO_SCHEMA or record.get("version") != _BATCH_UNDO_VERSION:
+            continue
+        operation_id = str(record.get("operation_id") or "")
+        claim = _acquire_batch_undo_claim(operation_id)
+        if claim is None:
+            # A live or uninspectable owner is authoritative over recovery.
+            continue
+        try:
+            # The directory scan and first read are discovery only. A live batch
+            # worker may finalize and publish the authoritative final record before
+            # recovery obtains the operation claim. Re-read only after acquisition.
+            final = _batch_undo_path(operation_id)
+            if final is not None and final.is_file():
+                try:
+                    authoritative = json.loads(final.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                if (
+                    authoritative.get("schema") == _BATCH_UNDO_SCHEMA
+                    and authoritative.get("version") == _BATCH_UNDO_VERSION
+                    and str(authoritative.get("operation_id") or "") == operation_id
+                    and authoritative.get("state") in {"finalized", "claimed", "consumed"}
+                ):
+                    continue
+                continue
+            if not path.is_file() or path != _batch_undo_prepared_path(operation_id):
+                continue
+            try:
+                fresh = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if (
+                fresh.get("schema") != _BATCH_UNDO_SCHEMA
+                or fresh.get("version") != _BATCH_UNDO_VERSION
+                or str(fresh.get("operation_id") or "") != operation_id
+                or fresh.get("state") not in {"prepared", "inflight", "recovery-required", "finalized"}
+            ):
+                continue
+            record = fresh
+            state = record.get("state")
+            evidence_path = directory / f"{operation_id}.recovery-evidence.json"
+            if evidence_path.is_file():
+                try:
+                    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+                    valid_evidence = (
+                        evidence.get("schema") == _BATCH_UNDO_SCHEMA
+                        and evidence.get("version") == _BATCH_UNDO_VERSION
+                        and evidence.get("operation_id") == operation_id
+                        and isinstance(evidence.get("items"), list)
+                    )
+                    if not valid_evidence:
+                        raise ValueError("invalid recovery evidence")
+                    record["recovery_evidence"] = evidence
+                    if evidence.get("state") == "recovery-required":
+                        state = "recovery-required"
+                        record["state"] = state
+                    _write_batch_undo_record(record, path)
+                    evidence_path.unlink(missing_ok=True)
+                except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+                    isolated = evidence_path.with_name(evidence_path.stem + ".invalid.json")
+                    try:
+                        os.replace(evidence_path, isolated)
+                    except OSError:
+                        pass
+            if state == "finalized":
+                final = _batch_undo_path(operation_id)
+                moved = record.get("items") or []
+                exact = bool(moved) and all(
+                    item.get("state") == "moved"
+                    and _safe_resolve(str(item.get("dir") or ""), str(item.get("file") or "")) is not None
+                    and not _safe_resolve(str(item.get("dir") or ""), str(item.get("file") or "")).exists()
+                    and (lambda p, expected: p is not None and p.is_file() and p.stat().st_size == expected.get("size") and p.stat().st_mtime_ns == expected.get("mtime_ns") and _file_digest(p) == expected.get("sha256"))(
+                        _safe_resolve("回收站", str(item.get("trash_file") or "")), item.get("post_state") or {}
+                    )
+                    for item in moved
+                )
+                if final is not None and exact:
+                    os.replace(path, final)
+                else:
+                    record["state"] = "recovery-required"
+                    record["recovery_errors"] = ["finalized post-state verification failed"]
+                    _write_batch_undo_record(record, path)
+            elif state in {"prepared", "inflight", "recovery-required"}:
+                _rollback_batch_trash_record(record)
+        finally:
+            _release_batch_undo_claim_checked(operation_id, claim, "operation-finally")
+
+    for path in directory.glob("[0-9a-f]*.json"):
+        if any(path.name.endswith(suffix) for suffix in (
+            ".prepared.json", ".claim.json", ".claim-recovery.json", ".recovery-evidence.json"
+        )):
+            continue
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if record.get("schema") != _BATCH_UNDO_SCHEMA or record.get("version") != _BATCH_UNDO_VERSION:
+            continue
+        if record.get("state") != "claimed":
+            continue
+        operation_id = str(record.get("operation_id") or "")
+        if not re.fullmatch(r"[0-9a-f]{32}", operation_id):
+            continue
+        # A2: acquire the SAME operation ownership before settling. Never
+        # pre-classify by pathname: a live owner or an uninspectable
+        # (AccessDenied) owner must stay busy, and reclaim must not race a
+        # live /batch/undo restore. Only one worker may enter restore/settle.
+        claim = _acquire_batch_undo_claim(operation_id)
+        if claim is None:
+            continue
+        try:
+            try:
+                fresh = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if fresh.get("schema") != _BATCH_UNDO_SCHEMA or fresh.get("version") != _BATCH_UNDO_VERSION:
+                continue
+            if fresh.get("state") != "claimed" or str(fresh.get("operation_id") or "") != operation_id:
+                continue
+            _settle_claimed_record(fresh)
+        except OSError:
+            _write_batch_recovery_evidence(record, "claimed outcome recovery write failed")
+        finally:
+            _release_batch_undo_claim_checked(operation_id, claim, "operation-finally")
+
+
+def _plan_batch_trash_items(items: list[dict]) -> tuple[list[dict], list[dict]]:
+    planned: list[dict] = []
+    failed: list[dict] = []
+    trash_dir = WORKBENCH_ROOT / "回收站"
+    reserved = {path.name.casefold() for path in trash_dir.glob("*")} if trash_dir.is_dir() else set()
+    for item in items:
+        dirname, filename = item["dir"], item["file"]
+        path = _safe_resolve(dirname, filename)
+        if path is None or not path.is_file():
+            failed.append({"dir": dirname, "file": filename, "entry": "", "error": "not found"})
+            continue
+        try:
+            frontmatter = _extract_frontmatter(path.read_text(encoding="utf-8", errors="replace"))[0] or {}
+            reason = _policy_ineligible_reason(dirname, str(frontmatter.get("status") or ""), "trash", None)
+        except Exception as exc:
+            failed.append({"dir": dirname, "file": filename, "entry": "", "error": str(exc)})
+            continue
+        if reason is not None:
+            failed.append({"dir": dirname, "file": filename, "entry": "", "error": reason})
+            continue
+        trash_name = path.name
+        if trash_name.casefold() in reserved:
+            suffix = 1
+            while True:
+                candidate = f"{path.stem}-dup{'' if suffix == 1 else suffix}{path.suffix}"
+                if candidate.casefold() not in reserved:
+                    trash_name = candidate
+                    break
+                suffix += 1
+        reserved.add(trash_name.casefold())
+        planned.append({
+            "dir": dirname,
+            "file": filename,
+            "trash_file": trash_name,
+            "state": "pending",
+            "origin_added": False,
+        })
+    return planned, failed
+
+
+def _batch_trash_transaction(items: list[dict]) -> tuple[list[dict], list[dict], dict | None, list[str]]:
+    """Move a batch only behind a durable v2 ledger and return finalized receipt."""
+    from datetime import date as _date
+
+    _recover_batch_undo_operations()
+    planned, failed = _plan_batch_trash_items(items)
+    if not planned:
+        return [], failed, None, []
+    now = _batch_undo_now()
+    record = {
+        "schema": _BATCH_UNDO_SCHEMA,
+        "version": _BATCH_UNDO_VERSION,
+        "operation_id": uuid.uuid4().hex,
+        "action": "trash",
+        "state": "prepared",
+        "created_at": now.isoformat(),
+        "expires_at": (now + _BATCH_UNDO_TTL).isoformat(),
+        "consumed_at": None,
+        "items": planned,
+    }
+    prepared_path = _batch_undo_prepared_path(record["operation_id"])
+    final_path = _batch_undo_path(record["operation_id"])
+    actual_paths = [
+        prepared_path,
+        final_path,
+        *(_safe_resolve(item["dir"], item["file"]) for item in planned),
+        *(_safe_resolve("回收站", item["trash_file"]) for item in planned),
+    ]
+    if final_path is None or any(path is None for path in actual_paths) or (os.name == "nt" and max(len(str(path)) for path in actual_paths if path is not None) >= 248):
+        failed.extend({"dir": item["dir"], "file": item["file"], "entry": "", "error": "undo ledger path is not Windows-safe"} for item in planned)
+        return [], failed, None, []
+    claim = _acquire_batch_undo_claim(record["operation_id"])
+    if claim is None:
+        failed.extend({"dir": item["dir"], "file": item["file"], "entry": "", "error": "operation busy"} for item in planned)
+        return [], failed, None, []
+    finalized_durable = False
+    try:
+        _write_batch_undo_record(record, prepared_path)
+        if not _renew_batch_undo_claim(record["operation_id"], claim):
+            raise OSError("undo lease renewal failed after prepare checkpoint")
+    except Exception as exc:
+        failed.extend({"dir": item["dir"], "file": item["file"], "entry": "", "error": f"undo ledger prepare failed: {exc}"} for item in planned)
+        _release_batch_undo_claim_checked(record["operation_id"], claim, "batch-transaction")
+        return [], failed, None, []
+
+    try:
+        for item in record["items"]:
+            source = _safe_resolve(item["dir"], item["file"])
+            trash = _safe_resolve("回收站", item["trash_file"])
+            if source is None or trash is None or not source.is_file() or trash.exists():
+                item["state"] = "failed"
+                failed.append({"dir": item["dir"], "file": item["file"], "entry": "", "error": "trash identity drifted before move"})
+                record["state"] = "inflight"
+                _write_batch_undo_record(record, prepared_path)
+                if not _renew_batch_undo_claim(record["operation_id"], claim):
+                    raise OSError("undo lease renewal failed after drift checkpoint")
+                continue
+            text = source.read_text(encoding="utf-8", errors="replace")
+            item["origin_added"] = "origin:" not in text
+            if not _renew_batch_undo_claim(record["operation_id"], claim):
+                raise OSError("undo lease renewal failed before move")
+            _rename_with_retry(source, trash)
+            if item["origin_added"]:
+                text = _patch_frontmatter(text, {
+                    "origin": f"{item['dir']}/{item['file']}",
+                    "trashed_at": _date.today().strftime("%Y-%m-%d"),
+                })
+                _atomic_write(trash, text)
+            stat = trash.stat()
+            item["post_state"] = {"sha256": _file_digest(trash), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns}
+            item["state"] = "moved"
+            record["state"] = "inflight"
+            _write_batch_undo_record(record, prepared_path)
+            if not _renew_batch_undo_claim(record["operation_id"], claim):
+                raise OSError("undo lease renewal failed after move checkpoint")
+
+        successful = [item for item in record["items"] if item.get("state") == "moved"]
+        if not successful:
+            record["state"] = "aborted"
+            record["aborted_at"] = _batch_undo_now().isoformat()
+            _write_batch_undo_record(record, prepared_path)
+            _release_batch_undo_claim_checked(record["operation_id"], claim, "batch-transaction")
+            return [], failed, None, []
+        record["items"] = successful
+        record["state"] = "finalized"
+        record["finalized_at"] = _batch_undo_now().isoformat()
+        _write_batch_undo_record(record, prepared_path)
+        if not _renew_batch_undo_claim(record["operation_id"], claim):
+            raise OSError("undo lease renewal failed after finalize checkpoint")
+        finalized_durable = True
+        os.replace(prepared_path, final_path)
+        _release_batch_undo_claim_checked(record["operation_id"], claim, "batch-transaction")
+    except Exception as exc:
+        rollback_errors = [] if finalized_durable else _rollback_batch_trash_record(record)
+        failed = [row for row in failed if row["file"] not in {item["file"] for item in record["items"]}]
+        failed.extend({
+            "dir": item["dir"], "file": item["file"], "entry": "",
+            "error": f"undo ledger transaction failed: {exc}" + (f"; recovery: {'; '.join(rollback_errors)}" if rollback_errors else ""),
+        } for item in record["items"])
+        _release_batch_undo_claim_checked(record["operation_id"], claim, "batch-transaction")
+        return [], failed, None, []
+
+    done, warnings = [], []
+    for item in record["items"]:
+        trash = _safe_resolve("回收站", item["trash_file"])
+        if trash is not None and trash.is_file():
+            text = trash.read_text(encoding="utf-8", errors="replace")
+            try:
+                _sync_conversation(text, status="trashed")
+            except Exception as exc:
+                warnings.append(f"conversation sync warning for {item['dir']}/{item['file']}: {exc}")
+        done.append({
+            "dir": item["dir"], "file": item["file"], "entry": "",
+            "detail": {"ok": True, "trashed": item["trash_file"]},
+        })
+    return done, failed, _receipt_from_batch_undo_record(record), warnings
+
+
+def _acquire_batch_undo_claim(operation_id: str) -> dict | None:
+    """Acquire a claim or atomically reclaim one owned by a dead/mismatched process."""
+    directory = _batch_undo_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    path = _batch_undo_claim_path(operation_id)
+    now = _batch_undo_now()
+    recovery = None
+    with _batch_undo_ownership_lock(operation_id):
+        # A release may have completed the claim->tombstone move but failed to
+        # unlink. Such tombstones are non-authoritative and converge on the next
+        # operation touch; their exact inactive registry identities converge too.
+        for released in list(directory.glob(f".{operation_id}.*.released.json"))[:_BATCH_UNDO_RELEASE_RETRIES]:
+            try:
+                old = json.loads(released.read_text(encoding="utf-8"))
+                released.unlink(missing_ok=True)
+                key = _claim_registry_key(old)
+                if key is not None:
+                    with _BATCH_UNDO_CLAIM_REGISTRY_LOCK:
+                        _INACTIVE_BATCH_UNDO_CLAIMS.discard(key)
+            except (OSError, ValueError, TypeError):
+                return None
+        if path.exists():
+            try:
+                previous = json.loads(path.read_text(encoding="utf-8"))
+                created = datetime.fromisoformat(str(previous["created_at"]))
+                heartbeat = datetime.fromisoformat(str(previous["heartbeat_at"]))
+                expiry = datetime.fromisoformat(str(previous["expires_at"]))
+                claim_id = str(previous["claim_id"])
+                inactive = _is_same_process_inactive_claim(previous)
+                if not (created <= heartbeat <= expiry) or (expiry >= now and not inactive) or not re.fullmatch(r"[0-9a-f]{32}", claim_id):
+                    return None
+                liveness = _claim_owner_liveness(previous.get("owner"))
+                if not inactive and liveness not in {"dead", "mismatch"}:
+                    return None
+                if not inactive and expiry >= now:
+                    return None
+                quarantine = directory / f"{operation_id}.{claim_id}.claim-recovery.json"
+                os.replace(path, quarantine)
+                recovery = {
+                    "reclaimed_claim_id": claim_id,
+                    "reclaimed_owner": previous.get("owner"),
+                    "quarantine": quarantine.name,
+                    "reclaimed_at": now.isoformat(),
+                    "owner_liveness": liveness,
+                }
+            except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+                return None
+        claim_id = uuid.uuid4().hex
+        claim = {
+            "schema": _BATCH_UNDO_SCHEMA,
+            "version": _BATCH_UNDO_VERSION,
+            "state": "claimed",
+            "operation_id": operation_id,
+            "claim_id": claim_id,
+            "owner": {**_current_claim_owner(), "lease_id": claim_id},
+            "created_at": now.isoformat(),
+            "heartbeat_at": now.isoformat(),
+            "expires_at": (now + _BATCH_UNDO_CLAIM_TTL).isoformat(),
+            **({"recovery": recovery} if recovery else {}),
+        }
+        _write_claim_file(claim, path)
+        _mark_claim_active(claim)
+        return claim
+
+
+def _renew_batch_undo_claim(operation_id: str, claim: dict) -> bool:
+    """Atomically extend a still-owned lease before/after each durable checkpoint."""
+    path = _batch_undo_claim_path(operation_id)
+    now = _batch_undo_now()
+    with _batch_undo_ownership_lock(operation_id):
+        try:
+            current = json.loads(path.read_text(encoding="utf-8"))
+            if not _claim_matches(current, claim):
+                return False
+            heartbeat = datetime.fromisoformat(str(current["heartbeat_at"]))
+            expiry = datetime.fromisoformat(str(current["expires_at"]))
+            if expiry < now and _claim_owner_liveness(current.get("owner")) != "live":
+                return False
+            if heartbeat > now:
+                return False
+            current["heartbeat_at"] = now.isoformat()
+            current["expires_at"] = (now + _BATCH_UNDO_CLAIM_TTL).isoformat()
+            _write_claim_file(current, path)
+            claim.update(current)
+            return True
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return False
+
+
+def _release_batch_undo_claim(operation_id: str, claim: dict) -> bool:
+    """Release only the exact claim, with bounded deterministic I/O retries."""
+    path = _batch_undo_claim_path(operation_id)
+    with _batch_undo_ownership_lock(operation_id):
+        try:
+            current = json.loads(path.read_text(encoding="utf-8"))
+            if not _claim_matches(current, claim):
+                return False
+            released = path.with_name(f".{operation_id}.{claim['claim_id']}.released.json")
+            moved = False
+            for _attempt in range(_BATCH_UNDO_RELEASE_RETRIES):
+                try:
+                    if not moved:
+                        os.replace(path, released)
+                        moved = True
+                    released.unlink(missing_ok=True)
+                    _mark_claim_active(claim)
+                    with _BATCH_UNDO_CLAIM_REGISTRY_LOCK:
+                        _INACTIVE_BATCH_UNDO_CLAIMS.discard(_claim_registry_key(claim))
+                    return True
+                except OSError:
+                    continue
+            _mark_claim_inactive(claim)
+            return False
+        except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+            _mark_claim_inactive(claim)
+            return False
+
+
+def _release_batch_undo_claim_checked(operation_id: str, claim: dict, context: str) -> bool:
+    """Make release failures observable at every mutation/recovery callsite."""
+    released = _release_batch_undo_claim(operation_id, claim)
+    if not released:
+        _log.warning("batch undo claim release failed operation=%s context=%s", operation_id, context)
+        raise OSError(f"batch undo claim remains recoverable operation={operation_id} context={context}")
+    return released
 
 def _queue_content_ingestion_sink(item: dict) -> dict:
     """Create one deterministic Hermes task; the Agent writes Obsidian later."""
@@ -985,47 +1744,50 @@ async def batch(body: dict) -> dict:
             seen_identities.add(identity)
             response_entry = entry.strip() if action in {"resolve", "to-task"} else ""
             normalized_items.append({"dir": dirname, "file": fname, "entry_title": response_entry})
-        for safe_item in normalized_items:
-            # production /batch 在生产路径实际消费 authoritative policy（可导入/可执行 seam）；
-            # 不合法（unknown 分区 / complete 遇非法状态）→ 记 failed 且不调用单项 handler（fail closed）。
-            try:
-                dirname = safe_item["dir"]
-                fname = safe_item["file"]
-                policy_status: str | None = None
-                policy_exec: str | None = None
-                p = _safe_resolve(dirname, fname) if dirname and fname else None
-                if p is not None and p.is_file():
-                    policy_fm = _extract_frontmatter(p.read_text(encoding="utf-8", errors="replace"))[0] or {}
-                    policy_status = str(policy_fm.get("status") or "")
-                    policy_exec = str(policy_fm.get("execution_result") or "")
-                    reason = _policy_ineligible_reason(
-                        dirname or "",
-                        policy_status,
-                        action,
-                        policy_exec if action == "complete" else None,
-                    )
-                    if reason is not None:
-                        failed.append({"dir": dirname, "file": fname, "entry": safe_item["entry_title"], "error": reason})
-                        continue
-            except Exception as e:  # 预检异常不能吞掉单项 handler 的既有定位/状态判定
-                failed.append({"dir": safe_item["dir"], "file": safe_item["file"], "entry": safe_item["entry_title"], "error": str(e)})
-                continue
-            # 逐项调用单条 handler（同线程 RLock 可重入，不会死锁）
-            try:
-                if action == "resolve":
-                    r = await resolve(safe_item)
-                elif action == "to-task":
-                    r = await to_task(safe_item)
-                elif action == "trash":
-                    r = await trash(safe_item)
-                else:
-                    r = await complete(safe_item)
-                if r.get("ok"):
-                    done.append({"dir": safe_item["dir"], "file": safe_item["file"], "entry": safe_item["entry_title"], "detail": r})
-                else:
-                    failed.append({"dir": safe_item["dir"], "file": safe_item["file"], "entry": safe_item["entry_title"], "error": r.get("error") or "failed"})
-            except Exception as e:
-                failed.append({"dir": safe_item["dir"], "file": safe_item["file"], "entry": safe_item["entry_title"], "error": str(e)})
+        receipt = None
+        warnings: list[str] = []
+        if action == "trash":
+            done, failed, receipt, warnings = _batch_trash_transaction(normalized_items)
+        else:
+            for safe_item in normalized_items:
+                # production /batch 在生产路径实际消费 authoritative policy（可导入/可执行 seam）；
+                # 不合法（unknown 分区 / complete 遇非法状态）→ 记 failed 且不调用单项 handler（fail closed）。
+                try:
+                    dirname = safe_item["dir"]
+                    fname = safe_item["file"]
+                    policy_status: str | None = None
+                    policy_exec: str | None = None
+                    p = _safe_resolve(dirname, fname) if dirname and fname else None
+                    if p is not None and p.is_file():
+                        policy_fm = _extract_frontmatter(p.read_text(encoding="utf-8", errors="replace"))[0] or {}
+                        policy_status = str(policy_fm.get("status") or "")
+                        policy_exec = str(policy_fm.get("execution_result") or "")
+                        reason = _policy_ineligible_reason(
+                            dirname or "",
+                            policy_status,
+                            action,
+                            policy_exec if action == "complete" else None,
+                        )
+                        if reason is not None:
+                            failed.append({"dir": dirname, "file": fname, "entry": safe_item["entry_title"], "error": reason})
+                            continue
+                except Exception as e:  # 预检异常不能吞掉单项 handler 的既有定位/状态判定
+                    failed.append({"dir": safe_item["dir"], "file": safe_item["file"], "entry": safe_item["entry_title"], "error": str(e)})
+                    continue
+                # 逐项调用单条 handler（同线程 RLock 可重入，不会死锁）
+                try:
+                    if action == "resolve":
+                        r = await resolve(safe_item)
+                    elif action == "to-task":
+                        r = await to_task(safe_item)
+                    else:
+                        r = await complete(safe_item)
+                    if r.get("ok"):
+                        done.append({"dir": safe_item["dir"], "file": safe_item["file"], "entry": safe_item["entry_title"], "detail": r})
+                    else:
+                        failed.append({"dir": safe_item["dir"], "file": safe_item["file"], "entry": safe_item["entry_title"], "error": r.get("error") or "failed"})
+                except Exception as e:
+                    failed.append({"dir": safe_item["dir"], "file": safe_item["file"], "entry": safe_item["entry_title"], "error": str(e)})
 
     # 统一一条批量日志（不逐条刷）
     if done:
@@ -1034,7 +1796,207 @@ async def batch(body: dict) -> dict:
             f"{d['file']}" + (f"#{d['entry']}" if d["entry"] else "") for d in done[:20]
         ) + (" 等" if len(done) > 20 else ""))
 
-    return {"ok": not failed or bool(done), "done": done, "failed": failed, "summary": {"ok": len(done), "fail": len(failed)}}
+    response = {"ok": not failed or bool(done), "done": done, "failed": failed, "summary": {"ok": len(done), "fail": len(failed)}}
+    if action == "trash" and done:
+        if receipt is None:
+            return _batch_rejection("successful trash rows require durable undo receipt")
+        response["operation_id"] = receipt["operation_id"]
+        response["undo_receipt"] = receipt
+        if warnings:
+            response["warnings"] = warnings
+    return response
+
+
+@router.post("/batch/undo")
+async def undo_batch_trash(body: dict) -> dict:
+    """Own, recover and consume one authoritative batch-trash operation."""
+    if not isinstance(body, dict):
+        return _batch_undo_rejection("request body must be an object")
+    operation_id = body.get("operation_id")
+    if not isinstance(operation_id, str):
+        return _batch_undo_rejection("operation_id must be a string")
+    # Public wire receipts are always explicit v2. Legacy v1 compatibility is
+    # limited to the server-side ledger reader below.
+    if body.get("schema") != _BATCH_UNDO_SCHEMA or body.get("version") != _BATCH_UNDO_VERSION:
+        return _batch_undo_rejection("public receipt schema/version unsupported", operation_id)
+    operation_path = _batch_undo_path(operation_id)
+    if operation_path is None:
+        return _batch_undo_rejection("invalid operation_id")
+    if body.get("action") != "trash":
+        return _batch_undo_rejection("operation action mismatch", operation_id)
+    requested = body.get("items")
+    if not isinstance(requested, list) or not requested:
+        return _batch_undo_rejection("exact successful identities required", operation_id)
+    normalized_requested = []
+    for index, item in enumerate(requested):
+        if not isinstance(item, dict) or set(item) != {"dir", "file"}:
+            return _batch_undo_rejection(f"items[{index}] must contain exact dir/file identity", operation_id)
+        if not isinstance(item["dir"], str) or not isinstance(item["file"], str):
+            return _batch_undo_rejection(f"items[{index}] dir/file must be strings", operation_id)
+        normalized_requested.append({"dir": item["dir"], "file": item["file"]})
+    if len({(item["dir"], item["file"]) for item in normalized_requested}) != len(normalized_requested):
+        return _batch_undo_rejection("duplicate requested identity", operation_id)
+
+    terminal_warning = None
+    terminal_consumed = True
+    with _WRITE_LOCK:
+        _recover_batch_undo_operations()
+        claim = _acquire_batch_undo_claim(operation_id)
+        if claim is None:
+            return _batch_undo_rejection("operation busy", operation_id)
+
+        def reject(error: str, *, release: bool = True) -> dict:
+            if release:
+                _release_batch_undo_claim_checked(operation_id, claim, "operation-finally")
+            return _batch_undo_rejection(error, operation_id)
+
+        try:
+            record = json.loads(operation_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return reject("operation not found")
+        version = record.get("version")
+        is_v1 = version == 1 and record.get("schema") in {None, ""}
+        is_v2 = version == _BATCH_UNDO_VERSION and record.get("schema") == _BATCH_UNDO_SCHEMA
+        if not (is_v1 or is_v2):
+            return reject("unknown operation schema/version")
+        if record.get("operation_id") != operation_id or record.get("action") != "trash":
+            return reject("operation record mismatch")
+        if record.get("consumed_at") is not None or record.get("state") == "consumed":
+            return reject("operation already consumed")
+        if is_v2 and record.get("state") not in {"finalized", "claimed"}:
+            return reject("operation is not finalized")
+        try:
+            expires_at = datetime.fromisoformat(str(record["expires_at"]))
+        except (KeyError, TypeError, ValueError):
+            return reject("operation expiry invalid")
+        if _batch_undo_now() > expires_at:
+            return reject("operation expired")
+        stored_items = record.get("items")
+        if not isinstance(stored_items, list) or not stored_items:
+            return reject("operation identities missing")
+        expected = [{"dir": item.get("dir"), "file": item.get("file")} for item in stored_items]
+        if normalized_requested != expected:
+            return reject("successful identities mismatch")
+
+        for item in stored_items:
+            trash_file = item.get("trash_file")
+            if not isinstance(trash_file, str):
+                return reject("operation trash identity invalid")
+            trash_path = _safe_resolve("回收站", trash_file)
+            target_path = _safe_resolve(str(item.get("dir") or ""), str(item.get("file") or ""))
+            if trash_path is None or not trash_path.is_file():
+                return reject("trash post-state missing")
+            if target_path is None:
+                return reject("original identity invalid")
+            if target_path.exists():
+                return reject("original path collision")
+            post_state = item if is_v1 else item.get("post_state")
+            if not isinstance(post_state, dict):
+                return reject("trash post-state invalid")
+            stat = trash_path.stat()
+            if stat.st_size != post_state.get("size") or stat.st_mtime_ns != post_state.get("mtime_ns") or _file_digest(trash_path) != post_state.get("sha256"):
+                return reject("trash post-state drifted")
+
+        record["state"] = "claimed"
+        record["claimed_at"] = _batch_undo_now().isoformat()
+        record["claim"] = {"claim_id": claim["claim_id"], "owner": claim["owner"]}
+        record["outcome"] = {"restored": [], "failed": []}
+        try:
+            if not _renew_batch_undo_claim(operation_id, claim):
+                raise OSError("restore lease renewal failed before claim checkpoint")
+            _write_batch_undo_record(record, operation_path)
+        except OSError:
+            return reject("operation claim ledger write failed")
+
+        restored, failed = [], []
+        for item in stored_items:
+            item["undo_state"] = "intent"
+            item["undo_intent_at"] = _batch_undo_now().isoformat()
+            try:
+                if not _renew_batch_undo_claim(operation_id, claim):
+                    raise OSError("restore lease renewal failed before intent checkpoint")
+                _write_batch_undo_record(record, operation_path)
+            except OSError:
+                if not restored:
+                    return reject("restore intent ledger write failed")
+                try:
+                    _settle_claimed_record(record)
+                    restored = list(record["outcome"]["restored"])
+                    failed = list(record["outcome"]["failed"])
+                    _release_batch_undo_claim_checked(operation_id, claim, "operation-finally")
+                except OSError as exc:
+                    # A1: restore already physically happened; converge to consumed:true terminal.
+                    try:
+                        _write_batch_recovery_evidence(record, f"restore intent recovery failed: {exc}")
+                        restored, failed = _outcome_from_claimed_record(record)
+                    finally:
+                        _release_batch_undo_claim_checked(operation_id, claim, "operation-finally")
+                    terminal_warning = "restore intent persisted only as recovery evidence"
+                break
+            identity = {"dir": item["dir"], "file": item["file"]}
+            try:
+                result = await restore({"file": item["trash_file"], "_expected_dir": item["dir"], "_expected_file": item["file"]})
+            except Exception as exc:
+                result = {"ok": False, "error": str(exc)}
+            if result.get("ok"):
+                item["undo_state"] = "restored"
+                restored.append(identity)
+            else:
+                item["undo_state"] = "failed"
+                failed.append({**identity, "error": result.get("error") or "restore failed"})
+            record["outcome"] = {"restored": restored, "failed": failed}
+            try:
+                if not _renew_batch_undo_claim(operation_id, claim):
+                    raise OSError("restore lease renewal failed after outcome checkpoint")
+                _write_batch_undo_record(record, operation_path)
+            except OSError:
+                try:
+                    _settle_claimed_record(record)
+                    restored = list(record["outcome"]["restored"])
+                    failed = list(record["outcome"]["failed"])
+                    _release_batch_undo_claim_checked(operation_id, claim, "operation-finally")
+                except OSError as exc:
+                    try:
+                        _write_batch_recovery_evidence(record, f"restore outcome recovery failed: {exc}")
+                        restored, failed = _outcome_from_claimed_record(record)
+                    finally:
+                        _release_batch_undo_claim_checked(operation_id, claim, "operation-finally")
+                    terminal_warning = "restore outcome persisted only as recovery evidence"
+                break
+        else:
+            record["state"] = "consumed"
+            record["consumed_at"] = _batch_undo_now().isoformat()
+            record["outcome"] = {"restored": restored, "failed": failed}
+            try:
+                if not _renew_batch_undo_claim(operation_id, claim):
+                    raise OSError("restore lease renewal failed before terminal checkpoint")
+                _write_batch_undo_record(record, operation_path)
+                _release_batch_undo_claim_checked(operation_id, claim, "operation-finally")
+            except OSError as exc:
+                # A1: terminal ledger write failed AFTER restore physically completed.
+                # Converge to consumed:true terminal outcome carrying full exact identities;
+                # the recovery-evidence sidecar keeps the ledger re-settable idempotently.
+                try:
+                    _write_batch_recovery_evidence(record, f"terminal consumed ledger write failed: {exc}")
+                    restored, failed = _outcome_from_claimed_record(record)
+                finally:
+                    _release_batch_undo_claim_checked(operation_id, claim, "operation-finally")
+                terminal_warning = "terminal outcome persisted only as recovery evidence"
+
+    return {
+        "ok": bool(restored),
+        "restored": restored,
+        "failed": failed,
+        "summary": {"restored": len(restored), "failed": len(failed)},
+        "receipt": {
+            "schema": _BATCH_UNDO_SCHEMA,
+            "version": _BATCH_UNDO_VERSION,
+            "operation_id": operation_id,
+            "action": "trash",
+            "consumed": terminal_consumed,
+        },
+        **({"warning": terminal_warning} if terminal_warning else {}),
+    }
 
 
 @router.get("/file")
@@ -1476,9 +2438,22 @@ async def restore(body: dict) -> dict:
                 text = _patch_frontmatter(text, {"reopened_at": today})
             _atomic_write(p, text)
 
-        # 确定回移目标
+        # Undo internal exact mode reuses this restore path while disabling the
+        # legacy path guess and collision rename. Ordinary /restore callers do
+        # not send these fields and therefore retain the existing behavior.
+        expected_dir = body.get("_expected_dir")
+        expected_file = body.get("_expected_file")
         target_dir = None
-        if origin:
+        exact_dest = None
+        if expected_dir is not None or expected_file is not None:
+            if not isinstance(expected_dir, str) or not isinstance(expected_file, str):
+                return {"ok": False, "error": "invalid exact restore identity"}
+            exact_dest = _safe_resolve(expected_dir, expected_file)
+            if exact_dest is None or exact_dest.exists():
+                return {"ok": False, "error": "exact restore collision or invalid identity"}
+            exact_dest.parent.mkdir(parents=True, exist_ok=True)
+            target_dir = exact_dest.parent
+        elif origin:
             parts = origin.split("/", 1)
             if parts and parts[0] in {"待验证", "待回看", "任务", "心理学随想", "梦中的邮件"}:
                 target_dir = WORKBENCH_ROOT / parts[0]
@@ -1493,9 +2468,9 @@ async def restore(body: dict) -> dict:
             target_dir = WORKBENCH_ROOT / "待验证"
         target_dir.mkdir(exist_ok=True)
 
-        # 目标同名冲突 → 唯一化
-        dest = target_dir / filename
-        if dest.exists():
+        # 目标同名冲突 → 唯一化（exact Undo 已在全局预检中拒绝冲突）
+        dest = exact_dest if exact_dest is not None else target_dir / filename
+        if exact_dest is None and dest.exists():
             dest = target_dir / (p.stem + "-restored-" + p.suffix)
 
         _rename_with_retry(p, dest)

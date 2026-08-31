@@ -57,6 +57,7 @@ import {
   saveSettings,
   toTask,
   trashFile,
+  undoBatchTrash,
 } from './api'
 import { isOverdue, partitionMeta, priorityMeta, sizeMeta, STATUS_TONE, type WbBoard, type WbCard, type WbSearchResult, type WbSection, type WbSettings, type WbSettingsSchedulerItem } from './types'
 import { canArchiveTask, launchWorkbenchTask, type WorkbenchExecutionDeps } from './execution'
@@ -66,7 +67,7 @@ import { WbPreviewDrawer } from './drawer'
 import { TableBoardView, ViewSwitcher } from './views'
 import { HomeView } from './home'
 import { ConversationIndexView } from './conversations'
-import { consumeLegacyBatchResponse } from './batch-response'
+import { consumeBatchUndoResponse, consumeLegacyBatchResponse, type BatchUndoReceipt } from './batch-response'
 
 const executionDeps: WorkbenchExecutionDeps = {
   prepare: async input => {
@@ -1249,6 +1250,7 @@ export function WorkbenchBoardPage() {
   const [multiMode, setMultiMode] = useState(false)
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [batchBusy, setBatchBusy] = useState(false)
+  const [pendingTrashUndo, setPendingTrashUndo] = useState<BatchUndoReceipt | null>(null)
   // A4：全局搜索（防抖 250ms → /search；结果下拉点击 → 预览）
   const [searchQ, setSearchQ] = useState('')
   const [debouncedQ, setDebouncedQ] = useState('')
@@ -1310,6 +1312,7 @@ export function WorkbenchBoardPage() {
       consumeLegacyBatchResponse(action, items, res, {
         notify: notice => host.notify(notice),
         invalidate: invalidateBoard,
+        offerUndo: receipt => setPendingTrashUndo(receipt),
         replaceSelection: failedItems => setSelected(new Set(failedItems.map(item => JSON.stringify([
           item.dir,
           item.file,
@@ -1317,6 +1320,24 @@ export function WorkbenchBoardPage() {
         ])))),
         clearSelection: () => setSelected(new Set()),
         exitMultiMode: () => setMultiMode(false),
+      })
+    } catch (err) {
+      host.notify({ kind: 'error', message: String(err) })
+    } finally {
+      setBatchBusy(false)
+    }
+  }
+
+  const runTrashUndo = async () => {
+    if (!pendingTrashUndo || batchBusy) return
+    setBatchBusy(true)
+    try {
+      const result = await undoBatchTrash(pendingTrashUndo)
+      consumeBatchUndoResponse(pendingTrashUndo, result, {
+        notify: notice => host.notify(notice),
+        invalidate: invalidateBoard,
+        clearReceipt: () => setPendingTrashUndo(null),
+        retainReceipt: () => undefined,
       })
     } catch (err) {
       host.notify({ kind: 'error', message: String(err) })
@@ -1576,8 +1597,14 @@ export function WorkbenchBoardPage() {
           <span className="text-[0.8125rem] text-(--ui-text-secondary)">已选 {selected.size} 项</span>
           <Button size="sm" variant="outline" disabled={batchBusy || selected.size === 0} onClick={() => runBatch('complete')}>批量归档</Button>
           <Button size="sm" variant="outline" disabled={batchBusy || selected.size === 0} onClick={() => runBatch('resolve')}>批量归档</Button>
-          <Button size="sm" variant="outline" disabled={batchBusy || selected.size === 0} onClick={() => runBatch('trash')}>批量删除</Button>
+          <Button size="sm" variant="outline" disabled={batchBusy || selected.size === 0} onClick={() => runBatch('trash')}>批量移入回收站</Button>
           <Button size="sm" variant="outline" onClick={() => { setSelected(new Set()); setMultiMode(false) }}>取消</Button>
+        </div>
+      )}
+      {pendingTrashUndo && (
+        <div className="flex items-center gap-2 border-b border-(--ui-stroke-secondary) bg-(--ui-accent)/5 px-3 py-1.5">
+          <span className="text-[0.8125rem] text-(--ui-text-secondary)">已移入回收站 {pendingTrashUndo.items.length} 项</span>
+          <Button size="sm" variant="outline" disabled={batchBusy} onClick={runTrashUndo}>撤销移入回收站</Button>
         </div>
       )}
 

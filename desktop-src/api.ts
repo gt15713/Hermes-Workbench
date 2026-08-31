@@ -8,6 +8,7 @@
 import { atom, type PluginRestOptions, type PluginStorage, queryClient } from '@hermes/plugin-sdk'
 import type { WbBoard, WbConversationRef, WbEvent, WbSearchResponse, WbSettings, WbSettingsResponse } from './types'
 import type { WbContentItem } from './content-review'
+import type { BatchUndoReceipt } from './batch-response'
 
 type Rest = <T>(path: string, opts?: PluginRestOptions) => Promise<T>
 type Socket = (path: string, onMessage: (data: unknown) => void) => () => void
@@ -346,7 +347,23 @@ export const batchAction = (
     failed: Array<{ dir?: string; file?: string; entry?: string; error?: string }>
     summary: { ok: number; fail: number }
     error?: string
+    operation_id?: string
+    undo_receipt?: BatchUndoReceipt
   }>('/batch', {
     method: 'POST',
     body: { action, items },
+  })
+
+/** Consume one authoritative batch-trash receipt. Never infer identities from the current board. */
+export const undoBatchTrash = (receipt: BatchUndoReceipt) =>
+  call<{
+    ok: boolean
+    restored: Array<{ dir: string; file: string }>
+    failed: Array<{ dir: string; file: string; error: string }>
+    summary: { restored: number; failed: number }
+    receipt?: { schema: 'workbench.batch-trash-undo'; version: 2; operation_id: string; action: 'trash'; consumed: boolean }
+    error?: string
+  }>('/batch/undo', {
+    method: 'POST',
+    body: receipt,
   })

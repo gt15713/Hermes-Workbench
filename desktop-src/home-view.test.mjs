@@ -28,6 +28,15 @@ test('default page renders from buildHomeModel, not its own sections filter', ()
   assert.doesNotMatch(ui, /sections\.find\(s => s\.key === 'task'\)\?\.files/)
 })
 
+test('WB-S1-057: default Home owns authoritative trash receipt and visible Undo copy', () => {
+  assert.match(home, /consumeBatchResponse/)
+  assert.match(home, /consumeBatchUndoResponse/)
+  assert.match(home, /pendingTrashUndo/)
+  assert.match(home, /data-wb-home-trash-undo/)
+  assert.match(home, /批量移入回收站/)
+  assert.match(home, /撤销移入回收站/)
+})
+
 test('tagline and three main regions render under wide screens', () => {
   assert.match(home, /手机收进来的东西，在这里审核、继续、沉淀。/)
   assert.match(home, /lg:grid-cols-3/)
