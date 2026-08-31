@@ -16,6 +16,9 @@ dev = [
   "websockets",
 ]
 
+[tool.setuptools]
+packages = []
+
 [tool.ruff]
 line-length = 100
 target-version = "py311"
